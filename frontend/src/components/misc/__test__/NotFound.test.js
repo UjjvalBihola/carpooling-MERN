@@ -3,8 +3,7 @@ import React from "react";
 import NotFound from "../NotFound";
 
 describe("not-found", () => {
-
-   it("Should render", () => {
-      shallow(<NotFound />);
-   });
-})
+  it("Should render", () => {
+    shallow(<NotFound />);
+  });
+});
