@@ -86,13 +86,20 @@ export default function ActiveTrip({ setActiveTrip }) {
 
         Geocode.fromLatLng(lat, long).then(
             (res) => {
-                const location = res.results[0].formatted_address;
-                if (type === 'src') {
-                    setsource(location)
-                }
-                else {
-                    setdestination(location)
-                }
+			
+				const location = res.results[0].formatted_address;
+				const commaIndex = location.indexOf(',');
+				
+				if (commaIndex !== -1) {
+					const formattedLocation = location.substring(commaIndex + 1).trim();
+				
+					if (type === 'src') {
+						setsource(formattedLocation);
+					} else {
+						setdestination(formattedLocation);
+					}
+				}
+				
             },
             (err) => {
                 console.error(err);

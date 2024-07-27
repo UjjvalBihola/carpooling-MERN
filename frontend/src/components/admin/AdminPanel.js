@@ -84,7 +84,7 @@ const AdminPanel = () => {
                 </div>
                 <div className="card bg-success text-white">
                     <h3>Saved Carbon Footprint</h3>
-                    <p>1500 kg</p>
+                    <p>150 kg</p>
                 </div>
                 
             </div>
