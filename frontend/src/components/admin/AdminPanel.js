@@ -17,16 +17,14 @@ const AdminPanel = () => {
             try {
                 const token = localStorage.getItem('adminToken');
                 const [tripsResponse, usersResponse] = await Promise.all([
-                    fetch(process.env.REACT_APP_END_POINT + '/admin/trips', {
+                    fetch(`${process.env.REACT_APP_END_POINT}/admin/trips`, {
                         headers: {
-                            'Authorization': localStorage.getItem('adminToken')
-
+                            'Authorization': token
                         }
                     }),
-                    fetch(process.env.REACT_APP_END_POINT + '/admin/users', {
+                    fetch(`${process.env.REACT_APP_END_POINT}/admin/users`, {
                         headers: {
-                            'Authorization': localStorage.getItem('adminToken')
-
+                            'Authorization': token
                         }
                     }),
                 ]);
@@ -75,6 +73,21 @@ const AdminPanel = () => {
     return (
         <div className="admin-panel">
             <h1>Welcome to the Admin Panel</h1>
+            <div className="stats-cards">
+                <div className="card bg-primary text-white">
+                    <h3>Total Users</h3>
+                    <p>{users.length}</p>
+                </div>
+                <div className="card bg-info ">
+                    <h3>Total Trips</h3>
+                    <p>{trips.length}</p>
+                </div>
+                <div className="card bg-success text-white">
+                    <h3>Saved Carbon Footprint</h3>
+                    <p>1500 kg</p>
+                </div>
+                
+            </div>
             <div className="container">
                 <section className="table-container">
                     <h2>Trips</h2>
@@ -106,7 +119,9 @@ const AdminPanel = () => {
                                     <td>{new Date(trip.dateTime).toLocaleString()}</td>
                                     <td>{trip.completed ? 'Completed' : 'In Progress'}</td>
                                     <td>
-                                        <button onClick={() => setSelectedTrip(trip)}>View</button>
+                                        <button className='btn btn-primary' onClick={() => setSelectedTrip(trip)}>View</button>
+										<button  className='btn btn-info' onClick={() => setSelectedTrip(trip)}>Delete</button>
+
                                     </td>
                                 </tr>
                             ))}
@@ -131,7 +146,9 @@ const AdminPanel = () => {
                                     <td>{user.name}</td>
                                     <td>{user.email}</td>
                                     <td>
-                                        <button onClick={() => setSelectedUser(user)}>View</button>
+                                        <button className='btn btn-success' onClick={() => setSelectedUser(user)}>View</button>
+										<button  className='btn btn-info' onClick={() => setSelectedTrip(user)}>Delete</button>
+
                                     </td>
                                 </tr>
                             ))}

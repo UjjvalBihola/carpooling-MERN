@@ -114,7 +114,7 @@ export default function Navbar({ setToken, activeTrip, name }) {
                                     return (
                                         <li key={index} className='nav-text'>
                                             <Link to={item.path}>
-                                                {item.icon}
+                                                {item.icon}1
                                                 <span style={{ marginLeft: '1rem' }}>{item.title}</span>
                                             </Link>
                                         </li>
