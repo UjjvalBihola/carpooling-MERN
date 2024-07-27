@@ -1,0 +1,5087 @@
+[FILE_START]README.md
+# ShareMyGaddi
+## A Carpooling Web-Application
+
+Set the environment variables in both backend and frontend folders before running. You will need MongoDB database connection and google maps API key with the required APIs enabled.
+
+This project was a part of the ECE 651 course project where aim was to bring software engineering/development agile methodologies into practice. CI/CD pipleline was also created as part of the project to build the project and run test cases upon raise of a PR to master branch and to deploy to heroku upon merge of the PR.
+
+[FILE_END]README.md
+
+[DIR_START]backend
+[DIR_START]backend/Controllers
+[FILE_START]backend/Controllers/allusersRoutes.js
+//import  u from "../Models/user.js";
+const u = require("../Models/user.js")
+exports.allusersRoutes = (req, res) => {
+    u.find().exec((err, ud) => {
+        // if(err){
+        //     res.status(400).json({
+        //         error:"no user found"
+        //     })
+        // }
+        res.json(ud)
+    })
+}
+
+//export {allusersRoutes}
+[FILE_END]backend/Controllers/allusersRoutes.js
+
+[FILE_START]backend/Controllers/authenticate.js
+const User = require("../Models/user.js");
+const { validationResult } = require('express-validator');
+const jwt = require('jsonwebtoken');
+const expressJwt = require('express-jwt');
+const dotenv = require("dotenv");
+
+dotenv.config()
+
+exports.signout = (req, res) => {
+   
+    if (Object.keys(req.cookies) != 'tokken') {
+        res.statusMessage = "user already signedout";
+        return res.status(400).end();
+    }
+    // need to check how to check out how to perform system testing for signout
+    res.clearCookie("tokken")
+    res.status(200).json({
+        message: "user signout"
+    });
+}
+
+exports.signup = (req, res) => {
+    const error = validationResult(req)
+    if (!error.isEmpty()) {
+        res.statusMessage = error.array()[0].msg;
+        return res.status(422).end();
+    }
+    const new_user = new User(req.body);
+    new_user.save((err, user) => {
+        if (err) {
+            res.statusMessage = "User with this email already exists";
+            return res.status(400).end();
+        }
+        // create token and put in cookie
+        const token = jwt.sign({ _id: user._id }, process.env.SECRET)
+        // put in cookie
+        res.cookie("tokken", token, { expire: new Date() + 9999 });
+        // send response to front end
+        const { _id, name, lastname, email, role, active_trip } = user;
+        res.status(200);
+        res.json({
+            token,
+            user: { _id, name: name + ' ' + lastname, email, role, active_trip },
+        });
+        
+        return res
+    })
+
+}
+exports.delete_user =(req,res)=>{
+
+    User.findById(req.auth._id,(err,trip)=>{
+       
+        if((err)||(trip==null)){
+            res.status(400).json({error:"user cannot be found"})
+            return res;
+        }
+        trip.deleteOne((err)=>{
+            
+            // if(err)
+            // {
+            //     res.status(400).json({error:"user cannot be deleted"})
+            //     return res;
+
+            // }
+            return res.status(200).end();
+        })
+    })
+    
+
+}
+exports.signin = (req, res) => {
+    const { email, password } = req.body;
+    const error = validationResult(req)
+    if (!error.isEmpty()) {
+        res.statusMessage = error.array()[0].msg;
+        return res.status(422).end();
+    }
+
+    User.findOne({ email }, (err, user) => {
+        if (err || !user) {
+            res.statusMessage = "User email does not exist";
+            return res.status(400).end();
+        }
+        if (!user.authenticate(password)) {
+            res.statusMessage = "Email and Password does not match"
+            return res.status(401).end();
+        }
+        // create token and put in cookie
+        const token = jwt.sign({ _id: user._id }, process.env.SECRET)
+        // put in cookie
+        res.cookie("tokken", token, { expire: new Date() + 9999 });
+        
+        // send response to front end
+        const { _id, name, lastname, email, role, active_trip } = user;
+        res.status(200);
+        res.json({
+            token,
+            user: { _id, name: name + ' ' + lastname, email, role, active_trip },
+        });
+        return res
+    })
+
+}
+
+exports.isSignedin = (req, res, next) => {
+    let token = req.get('coookie')
+    if (!token && req.headers['authorization']) {
+        //another working solution BEGIN
+        const bearerHeader = req.headers['authorization'];
+        if (bearerHeader) {
+            const bearer = bearerHeader.split(' ');
+
+            token = bearer[1];
+        }
+        //another working solution END
+    }
+    if (token && token != 'undefined') {
+        jwt.verify(token, process.env.SECRET, (err, decodestring) => {
+            if (err) {
+                
+                res.statusMessage = "User authentication expired";
+                return res.status(401).end();
+            }
+            else {
+                req.auth = decodestring
+                next()
+            }
+        })
+    }
+    else {
+        res.statusMessage = "User not signed in";
+        return res.status(401).end();
+    }
+}
+
+
+// exports.isAuthenticated = (req, res, next) => {
+//     let check = req.profile && req.auth && req.profile._id == req.auth._id;
+//     //console.log(req.profile._id)
+//     //console.log(req.auth)
+//     if (!check) {
+//         return res.status(400).json({
+//             error: "Access denied......"
+//         })
+//     }
+//     next()
+// }
+[FILE_END]backend/Controllers/authenticate.js
+
+[FILE_START]backend/Controllers/trip.js
+const Trip = require("../Models/tripModel");
+const User = require("../Models/user");
+const dotenv = require("dotenv");
+const { Client } = require("@googlemaps/google-maps-services-js");
+var polylineUtil = require('@mapbox/polyline');
+const mapsClient = new Client({});
+const { PolyUtil } = require("node-geometry-library");
+dotenv.config()
+
+// const MS_PER_MINUTE = 60000;
+const offsetDurationInMinutes = 15;
+const pct = .3; // Percent of route points for source (others are checked for destination)
+const radiusOffset = 50;    //TODO: TUNE
+
+exports.activeTrip = (req, res) => {
+    var riderArray = [];
+    User.findById(req.auth._id, (err, user) => {
+       
+       if (user.active_trip == undefined || user.active_trip == null) {
+            res.statusMessage = "No active trip";
+            return res.status(400).end();
+        }
+        Trip.findById(user.active_trip, (err, trip) => {
+
+            User.findById(trip.driver, (err, user_driver) => {
+                const riders = trip.riders;
+              
+                if(riders.length === 0){
+                    res.status(200).json({
+                        ...trip._doc,
+                        riders: riderArray,
+                        driver: user_driver.name + ' ' + user_driver.lastname
+                    })
+                }
+              
+                var i = 0;
+                riders.forEach(rider => {
+                    User.findById(rider, (err, user_rider) => {
+
+                        if (err)
+                            return res.status(500).end();
+                        riderArray.push(String(user_rider.name + ' ' + user_rider.lastname));
+                        i++;
+                        if (i == riders.length) {
+                            return res.status(200).json({
+                                ...trip._doc,
+                                riders: riderArray,
+                                driver: user_driver.name + ' ' + user_driver.lastname
+                            })
+                        }
+                    })
+                })
+            });
+        });
+    });
+}
+
+exports.drive = (req, res) => {
+    User.findById(req.auth._id, (err, user) => {
+        if (err)
+            return res.status(500).end();
+        if (user.active_trip == undefined || user.active_trip == null) {
+            const tripObj = new Trip({
+                driver: req.auth._id,
+                source: req.body.src,
+                destination: req.body.dst,
+                route: req.body.route,
+                dateTime: new Date(req.body.dateTime),
+                max_riders: req.body.max_riders,
+            });
+            tripObj.save((err, trip) => {
+                if (err) // TODO: ?Handle error coming due to not selecting all the required fields?
+                    return res.status(500).end();
+                res.status(200).json(trip);
+                user.active_trip = trip._id;
+                user.trip_role_driver = true;
+                user.save((err) => {
+                    if (err) {
+                        trip.deleteOne();
+                        return res.status(500).end();
+                    }
+                    return res;
+                })
+                return res.status(500).end();
+            })
+        } else {
+            //TODO: revert
+            res.statusMessage = "A trip is already active";
+            return res.status(400).end();
+        }
+    })
+}
+
+exports.ride = (req, res) => {
+    User.findById(req.auth._id, (err, user) => {
+        // if (err)
+        //     return res.status(500).end();
+        if (user.active_trip == undefined || user.active_trip == null) {
+            //Matching logic START
+            let startDateTime = new Date(req.body.dateTime);
+            startDateTime.setMinutes(startDateTime.getMinutes() - offsetDurationInMinutes);
+            let endDateTime = new Date(req.body.dateTime);
+            endDateTime.setMinutes(endDateTime.getMinutes() + offsetDurationInMinutes);
+            Trip.find({
+                completed: false,   //trip is active
+                available_riders: true,
+                date: {
+                    $gte: startDateTime,
+                    $lte: endDateTime
+                },
+            }, function (err, trips) {
+                if (err) {
+                    res.statusMessage = "No matches found. No trips around your time.";
+                    return res.status(400).end();
+                }
+                var trip;
+                trips.forEach(tempTrip => {
+                    const pctLen = parseInt(tempTrip.route.length * pct)
+                    let found = PolyUtil.isLocationOnPath(
+                        req.body.src,
+                        tempTrip.route.slice(0, pctLen),
+                        radiusOffset
+                    );
+                    if (found) {
+                        found = PolyUtil.isLocationOnPath(
+                            req.body.dst,
+                            tempTrip.route.slice(pctLen),
+                            radiusOffset
+                        );
+                        if (found) {
+                            trip = tempTrip;
+                            return;
+                        }
+                    }
+                });
+                //Matching logic END
+                if (trip == undefined || trip == null) {
+                    res.statusMessage = "No match found";
+                    return res.status(400).end();
+                }
+                trip.waypoints = [...trip.waypoints, req.body.src, req.body.dst];
+                mapsClient.directions({
+                    params: {
+                        origin: trip.source,
+                        destination: trip.destination,
+                        waypoints: trip.waypoints,
+                        drivingOptions: {
+                            departureTime: new Date(trip.dateTime),  // for the time N milliseconds from now.
+                        },
+                        optimize: true,
+                        key: process.env.MAPS_API_KEY
+                    },
+                    timeout: 2000, // milliseconds
+                })
+                    .then((r) => {
+                        const routeArray = polylineUtil.decode(r.data.routes[0].overview_polyline.points);
+                        trip.route = Object.values(routeArray)
+                            .map(item => ({ lat: item[0], lng: item[1] }));
+                        trip.riders.push(user._id);
+                        trip.available_riders = !(trip.riders.length === trip.max_riders);
+                        trip.save((err, trip) => {
+                            // if (err)
+                            //     return res.status(500).end();
+                            res.status(200).json(trip);
+                            user.active_trip = trip._id;
+                            user.trip_role_driver = false;
+                            user.save((err) => {
+                                // if (err) {
+                                //     //TODO: revert
+                                //     return res.status(500).end();
+                                // }
+                                return res;
+                            })
+                            return res.status(500).end();
+                        });
+                    })
+                    // .catch((e) => {
+                    //     res.statusMessage = e.response.data.error_message;
+                    //     return res.status(400).end();
+                    // });
+            });
+        } else {
+            res.statusMessage = "A trip is already active";
+            return res.status(400).end();
+        }
+    })
+}
+
+exports.cancelTrip = (req, res) => {
+    User.findById(req.auth._id, (err, user) => {
+        // if (err)
+        //     return res.status(500).end();
+        if (user.active_trip == undefined || user.active_trip == null) {
+            res.statusMessage = "No active trip";
+            return res.status(400).end();
+        } else {
+            Trip.findById(user.active_trip, (err, trip) => {
+                // if (err)
+                //     return res.status(500).end();
+                if (trip) {
+                    if (user.trip_role_driver) {
+                        trip.riders.forEach(rider => {  //3
+                            User.findById(rider, (err, user_rider) => {
+                                if (err)
+                                    return res.status(500).end();
+                                else {
+                                    user_rider.active_trip = null;
+                                    user_rider.trip_role_driver = null;
+                                    user_rider.save((err) => {
+                                        // if (err) {
+                                        //     //TODO: revert
+                                        //     res.statusMessage = "Error in saving user data for a rider.";
+                                        //     return res.status(500).end();
+                                        // }
+                                    })
+                                }
+                            })
+                        });
+                        trip.deleteOne((err) => {
+                            // if (err) {
+                            //     res.statusMessage = "Error in deleting trip object";
+                            //     return res.status(500).end();
+                            // }
+                        });
+                    } else {
+                        const riderIndex = trip.riders.indexOf(user._id);
+                        trip.waypoints.splice(riderIndex * 2, 2);
+                        mapsClient.directions({
+                            params: {
+                                origin: trip.source,
+                                destination: trip.destination,
+                                waypoints: trip.waypoints,
+                                drivingOptions: {
+                                    departureTime: new Date(trip.dateTime),  // for the time N milliseconds from now.
+                                },
+                                optimize: true,
+                                key: process.env.MAPS_API_KEY
+                            },
+                            timeout: 2000, // milliseconds
+                        })
+                            .then((r) => {
+                                const routeArray = polylineUtil.decode(r.data.routes[0].overview_polyline.points);
+                                trip.route = Object.values(routeArray)
+                                    .map(item => ({ lat: item[0], lng: item[1] }));
+                                trip.riders.splice(riderIndex);
+                                trip.available_riders = true;
+                                trip.save((err) => {
+                                    if (err)
+                                        return res.status(500).end();
+                                });
+                            })
+                            .catch((e) => {
+                                res.statusMessage = e.response.data.error_message;
+                                return res.status(400).end();
+                            });
+                    }
+                }
+                user.active_trip = null;
+                user.trip_role_driver = null;
+                user.save((err) => {
+                    // if (err) {
+                    //     res.statusMessage = "Error in saving user. Trip was deleted/modified.";
+                    //     return res.status(500).end();
+                    // }
+                    res.status(200).end();
+                    return res;
+                });
+            });
+        }
+    })
+}
+
+exports.tripHistory = (req, res) => {
+    User.findById(req.auth._id, (err, user) => {
+        // if (err)
+        //     return res.status(500).end();
+        // else {
+            Trip.find({ '_id': { $in: user.trips } }, (err, trips) => {
+                // if (err)
+                //     return res.status(500).end();
+                res.status(200).json(trips);
+                return res;
+            })
+        // }
+    })
+}
+
+exports.tripDone = (req, res) => {
+    User.findById(req.auth._id, (err, user) => {
+        // if (err)
+        //     return res.status(500).end();
+        // else {
+            
+            if (user.active_trip == undefined || user.active_trip == null) {
+                res.statusMessage = "No active trip";
+                return res.status(400).end();
+            } else {
+                Trip.findById(user.active_trip, (err, trip) => {
+                    // if (err)
+                    //     return res.status(500).end();
+                    // else {
+                        trip.completed = true;
+                        trip.save((err) => {    //1
+                            // if (err) {
+                            //     res.statusMessage = "Error in saving trip status.";
+                            //     return res.status(500).end();
+                            // }
+                        });
+                        user.trips.push(trip._id);
+                        user.active_trip = null;
+                        user.trip_role_driver = null;
+                        user.save((err) => {    //2
+                            // if (err) {
+                            //     res.statusMessage = "Error in saving trip to table.";
+                            //     return res.status(500).end();
+                            // }
+                        });
+                        trip.riders.forEach(rider => {  //3
+                            User.findById(rider, (err, user_rider) => {
+                                // if (err)
+                                //     return res.status(500).end();
+                                // else {
+                                    user_rider.trips.push(trip._id);
+                                    user_rider.active_trip = null;
+                                    user_rider.trip_role_driver = null;
+                                    user_rider.save((err) => {
+                                        // if (err) {
+                                        //     //TODO: revert
+                                        //     res.statusMessage = "Error in saving user data for a rider.";
+                                        //     return res.status(500).end();
+                                        // }
+                                    })
+                                // }
+                            })
+                        });
+                        //POTENTIAL ISSUE (should not be since foreach is NOT async): Need to return 200 when 1, 2, 3 (all) are done
+                        return res.status(200).end();
+                    // }
+                })
+            }
+        // }
+    })
+}
+
+
+
+exports.isDriver = (req, res) => {
+    User.findById(req.auth._id, (err, user) => {
+        
+            if (user.trip_role_driver == undefined || user.trip_role_driver == null) {
+                res.statusMessage = "No active trip";
+                return res.status(400).end();
+            }
+            else
+                res.status(200).json({ "isdriver": user.trip_role_driver })
+        
+    })
+}
+[FILE_END]backend/Controllers/trip.js
+
+[FILE_START]backend/Controllers/user.js
+// const user = require("../Models/user");
+// exports.getuserById = (req, res, next, id) => {
+//   //console.log("inside get");
+//   user.findById(id).exec((err, user) => {
+//     if (err || !user) {
+//       return res.status(400).json({
+//         error: err,
+//       });
+//     }
+//     req.profile = user;
+//     next();
+//   });
+// };
+
+// exports.getuser = (req, res) => {
+//   //console.log("isnide suwee");
+//   req.profile.salt = undefined;
+//   req.profile.encry_password = undefined;
+//   return res.json(req.profile);
+// };
+// exports.updateUser = (req, res) => {
+//   user.findByIdAndUpdate(
+//     { _id: req.profile._id },
+//     { $set: req.body },
+//     { new: true, userFindAndModify: false },
+//     (err, user) => {
+//       if (err) {
+//         return res.status(400).json({
+//           error: "U are not authorise to update this user",
+//         });
+//       }
+//       user.salt = undefined;
+//       user.encry_password = undefined;
+//       res.json(user);
+//     }
+//   );
+// };
+
+[FILE_END]backend/Controllers/user.js
+
+[DIR_END]backend/Controllers
+
+[DIR_START]backend/Models
+[FILE_START]backend/Models/tripModel.js
+const mongoose = require("mongoose");
+const schema = mongoose.Schema;
+const tripSchema = new schema({
+    driver: {
+        type: mongoose.ObjectId,
+        require: true,
+    },    
+    source: {
+        type: Object,
+        required: true,
+    },
+    destination: {
+        type: Object,
+        required: true,
+    },
+    route: {
+        type: Array
+    },
+    waypoints: {
+        type: Array,
+        default: []
+    },
+    dateTime: {
+        type: Date,
+        required: true,
+    },
+    max_riders: {
+        type: Number,
+        required: true,
+    },
+    available_riders: {
+        type: Boolean,
+        default: true
+    },
+    riders: {
+        type: Array,
+        default: []
+    },
+    completed: {    // false: active
+        type: Boolean,
+        default: false
+    },
+}, { timestamps: true });
+
+module.exports = mongoose.model("trip", tripSchema)
+[FILE_END]backend/Models/tripModel.js
+
+[FILE_START]backend/Models/user.js
+const mongoose = require("mongoose");
+//import mongoose from "mongoose";
+const crypto = require("crypto");
+//import crypto from "crypto";
+const { v1: uuidv1 } = require('uuid');
+//import {v1 as uuidv1 } from "uuid";
+
+const schema = mongoose.Schema;
+const userSchema = new schema({
+    name: {
+        type: String,
+        require: true,
+        maxlength: 32,
+        trim: true
+    },
+    lastname: {
+        type: String,
+        maxlength: 32,
+        trim: true
+    },
+    email: {
+        type: String,
+        trim: true,
+        required: true,
+        unique: true,
+    },
+    phone_number: {
+        type: Number,
+        trim: true,
+    },
+    encry_password: {
+        type: String,
+        require: true,
+
+    },
+    salt: String, // will store the encryption of password field
+    user_photo: {
+        data: Buffer,
+        ContentType: String
+    },
+    trips: {
+        type: Array,
+        default: []
+    },
+    active_trip: {
+        type: mongoose.ObjectId,
+        //default:null
+    },
+    trip_role_driver: {
+        type: Boolean
+    }
+}, { timestamps: true });
+userSchema.virtual("password").set(function (password) {
+    this._password = password,
+        this.salt = uuidv1();
+    this.encry_password = this.securePassword(password);
+})
+/*.get(function(){
+    return this._password;
+});
+*/
+userSchema.methods = {
+    authenticate: function (plainpassword) {
+        return this.securePassword(plainpassword) === this.encry_password;
+    },
+    securePassword: function (plainpassword) {
+        /*if(!plainpassword)
+        return ""*/
+
+
+        return crypto.createHmac('sha256', this.salt)
+            .update(plainpassword)
+            .digest('hex');
+
+
+    }
+}
+module.exports = mongoose.model("user", userSchema)
+//export default mongoose.model("user",userSchema)
+[FILE_END]backend/Models/user.js
+
+[DIR_END]backend/Models
+
+[DIR_START]backend/Routes
+[FILE_START]backend/Routes/allusersRoutes.js
+/* temporary route to get all the user information*/
+//import express from "express";
+const express = require("express");
+//import {allusersRoutes} from "../Controllers/allusersRoutes.js";
+const { allusersRoutes } = require("../Controllers/allusersRoutes.js");
+var router = express.Router()
+
+router.get("/users", allusersRoutes)
+module.exports = router;
+//export default router;
+[FILE_END]backend/Routes/allusersRoutes.js
+
+[FILE_START]backend/Routes/authentication.js
+const express = require("express");
+//import express from "express";
+const { check, validationResult } = require('express-validator');
+//import { check,validationResult} from 'express-validator';
+// const distance = require('distance-matrix-api')
+//const distance = require('google-distance-matrix')
+
+var router = express.Router()
+const { signout, signup, signin, isSignedin,delete_user } = require("../Controllers/authenticate.js");
+
+//import {signout, signup, signin, isSignedin} from "../Controllers/authenticate.js";
+
+router.post("/signup", [
+    check("name", "name should be atleast 2 characters long").isLength({ min: 2 }),
+    check("email", "name should be atleast 5 characters long").isEmail(),
+    check("password", "Should be atleast 3 char").isLength({ min: 3 })
+
+], signup)
+
+
+/*trail code 
+
+ router.post('/',(req,res,next)=>{
+    const origins = ["NEW YORK"]
+    const dests=["University of WATERLOO"]
+    const mode="driving"
+    distance.key('AlphaDMAXaCkwt9xfFLu13thGWwjJ1RE2LNZ1UzV')
+    distance.matrix(origins,dests,mode,(err,distance)=>{
+    if(err)
+    {
+        console.log(err);
+        return;
+    }
+    if (distance.status == 'OK') {
+        for (var i=0; i < origins.length; i++) {
+            for (var j = 0; j < dests.length; j++) {
+                var origin = distance.origin_addresses[i];
+                console.log(origin)
+                var destination = distance.destination_addresses[j];
+                console.log(dests)
+                console.log(distance.rows[i])
+                console.log(distance.rows[i].elements[j])
+                // if (distance.rows[0].elements[j].status == 'OK') {
+                //     var dista = distance.rows[i].elements[j].distance.text;
+                //     console.log('Distance from ' + origin + ' to ' + destination + ' is ' + dista);
+                // } else {
+                //     console.log(destination + ' is not reachable by land from ' + origin);
+                // }
+            }
+        }
+    }
+})
+ })*/
+router.post("/signin", [
+    check("email", "name should be atleast 5 characters long").isEmail(),
+    check("password", "Should be atleast 3 char").isLength({ min: 3 })
+
+], signin)
+
+router.delete("/delete",isSignedin,delete_user);
+router.get("/signout", signout)
+
+// router.get("/test",isSignedin,(req,res)=>{
+// res.json(req.auth);
+// })
+module.exports = router;
+//export default router;
+
+[FILE_END]backend/Routes/authentication.js
+
+[FILE_START]backend/Routes/tripRoutes.js
+const express = require("express");
+const { isSignedin } = require("../Controllers/authenticate");
+
+var router = express.Router()
+const { drive, ride, cancelTrip, tripDone, tripHistory, activeTrip, isDriver } = require("../Controllers/trip.js");
+
+router.post("/trip/drive", isSignedin, drive)  // Swagger Api done
+router.post("/trip/ride", isSignedin, ride)    //Swagger Api done
+router.delete("/trip", isSignedin, cancelTrip) // Swagger Api pending
+router.post("/trip/done", isSignedin, tripDone) // Swagger Api pending
+router.get("/trip/history", isSignedin, tripHistory)// Swagger Api pending
+router.get("/trip/isdriver", isSignedin, isDriver) 
+router.get("/trip/activetrip", isSignedin, activeTrip)
+module.exports = router;
+
+[FILE_END]backend/Routes/tripRoutes.js
+
+[FILE_START]backend/Routes/user.js
+// const express=require ("express");
+// var router = express.Router();
+// const {getuserById,getuser,updateUser}= require("../Controllers/user");
+// const {isSignedin,isAuthenticated} = require("../Controllers/authenticate");
+
+// router.param("userId",getuserById);
+// router.get("/user/:userId",isSignedin,isAuthenticated,getuser)
+// router.put("/user/:userId",isSignedin,isAuthenticated,updateUser)
+// module.exports = router;
+[FILE_END]backend/Routes/user.js
+
+[DIR_END]backend/Routes
+
+[DIR_START]backend/__test__
+[FILE_START]backend/__test__/app.test.js
+const { signup } = require("../Controllers/authenticate.js");
+const route = require("../Routes/authentication.js");
+const { check, validationResult } = require("express-validator");
+const mongoose = require('mongoose');
+const app = require("../app");
+const request = require("supertest");
+const signup_route = "/api/signup";
+const signin = "/api/signin";
+const signout = "/api/signout";
+const users = "/api/users";
+const history ="/api/trip/history";
+const drive="/api/trip/drive";
+const active="/api/trip/activetrip";
+const drivertest="/api/trip/isdriver";
+const cancel ="/api/trip";
+const ongoingcomplete="/api/trip/done";
+const ride="/api/trip/ride";
+const delete_user="/api/delete";
+let token;
+let token2;
+let token3;
+let token4;
+let req_id;
+let token5;
+    beforeAll((done) => {
+      request(app)
+        .post(signin)
+        .send({
+          email: "user1@gmail.com",
+      password: "user1",
+        })
+        .end((err, response) => {
+          token = response.body.token; // save the token!
+          Error_tokken="weerrttffrt"
+          done();})
+        request(app)
+        .post(signin)
+        .send({
+          email: "user5@gmail.com",
+      password: "user5",
+        })
+        .end((err, response) => {
+          token2 = response.body.token; // save the token!
+          done();})
+        request(app)
+        .post(signin)
+        .send({
+          email: "user127@gmil.com",
+      password: "user124",
+        })
+        .end((err, response) => {
+          token3 = response.body.token; // save the token!
+          done();})
+        request(app)
+        .post(signin)
+        .send({
+          email: "user128@gmil.com",
+      password: "user128",
+        })
+        .end((err, response) => {
+          token4 = response.body.token; // save the token!
+          done();})
+    });
+
+    afterAll((done) => {
+      mongoose.models = {};
+      mongoose.modelSchemas = {};
+      mongoose.connection.close();
+      done();
+     });
+//-------------------------------------------------------------------------------------------
+//Unit & Integration Testing for Signup Route
+//-------------------------------------------------------------------------------------------
+
+// Unit Test Signup
+
+describe(signup_route, () => {
+  it("post" + signup_route, async () => {
+    const response = await request(app).post(signup_route).send({
+      name: "user243567",
+      Lastname: "user",
+      email: "user2435647@gmil.com",
+      password: "user243567",
+    });
+    expect(response.status).toEqual(400);
+    
+  });
+});
+
+
+describe(signup_route, () => {
+  it("post" + signup_route, async () => {
+    const response = await request(app).post(signup_route).send({
+      name: "A",
+      Lastname: "Baluja",
+      email: "Ad4rwere4@gmil.com",
+      password: "rahul123",
+    });
+    expect(response.status).toEqual(422);
+  });
+});
+// Integration Test Signup
+describe(signup_route, () => {
+  it("post" + signup_route, async () => {
+    const response = await request(app).post(signup_route).send({
+      name: "user141",
+      Lastname: "user_surname",
+      email: "user141@gmil.com",
+      password: "user138",
+    });
+    expect(response.status).toEqual(200);
+
+    req_id=response.body.user._id;
+  });
+});
+
+describe(signin, () => {
+  it("post" + signin, async () => {
+    const response = await request(app).post(signin).send({
+      email: "user141@gmil.com",
+      password: "user138",
+    });
+    expect(response.status).toEqual(200);
+    token5=response.body.token;
+  });
+});
+
+describe(delete_user, () => {
+  it("delete" + delete_user, async () => {
+    const response = await request(app).delete(delete_user).set('Authorization', `Bearer ${token5}`);
+    expect(response.status).toEqual(200);
+  });
+});
+describe(delete_user, () => {
+  it("delete" + delete_user, async () => {
+    const response = await request(app).delete(delete_user).set('Authorization', `Bearer ${token5}`);
+    expect(response.status).toEqual(400);
+  });
+});
+
+
+
+//-------------------------------------------------------------------------------------------
+//Unit & Integration Testing for Signin Route
+//-------------------------------------------------------------------------------------------
+
+//Unit Test SignIn
+describe(signin, () => {
+  it("post" + signin, async () => {
+    const response = await request(app).post(signin).send({
+      email: "B@gmail.com",
+      password: "rahul123",
+    });
+    expect(response.status).toEqual(400);
+  });
+});
+
+describe(signin, () => {
+  it("post" + signin, async () => {
+    const response = await request(app).post(signin).send({
+      email: "Ad4rwere4@gmil.com",
+      password: "rahul1",
+    });
+    expect(response.status).toEqual(401);
+  });
+});
+// Integration test SignIn
+describe(signin, () => {
+  it("post" + signin, async () => {
+    const response = await request(app).post(signin).send({
+      email: "Ad4rwere4@gmil.com",
+      password: "rahul123",
+    });
+    expect(response.status).toEqual(200);
+  });
+});
+
+describe(signin, () => {
+  it("post" + signin, async () => {
+    const response = await request(app).post(signin).send({
+      email: "B@gmail.com",
+      password: "rahul123",
+    });
+    expect(response.status).toEqual(400);
+  });
+});
+describe(signin, () => {
+  it("post" + signin, async () => {
+    const response = await request(app).post(signin).send({
+      email: "Ad4rwere4",
+      password: "rahul123",
+    });
+    expect(response.status).toEqual(422);
+  });
+});
+
+//-------------------------------------------------------------------------------------------
+//Unit & Integration Testing for Signout Route
+//-------------------------------------------------------------------------------------------
+
+describe(signout, () => {
+  it("get" + signout, async () => {
+    const response = await request(app).get(signout);
+    expect(response.status).toEqual(400);
+  });
+});
+
+//-------------------------------------------------------------------------------------------
+//Unit & Integration Testing for all user  Route
+//-------------------------------------------------------------------------------------------
+
+describe(users, () => {
+  it("get" + users, async () => {
+    const response = await request(app).get(users);
+    expect(response.status).toEqual(200);
+  });
+});
+
+//-------------------------------------------------------------------------------------------
+//Unit & Integration Testing for Drive Route
+//-------------------------------------------------------------------------------------------
+
+// check proper history
+describe(history, () => {
+  it("get" + history, async () => {
+    const response2 = await request(app).get(history).set('Authorization', `Bearer ${token}`);
+    expect(response2.status).toEqual(200);
+    
+  });
+});
+// check fail issignin
+describe(history, () => {
+  it("get" + history, async () => {
+    const response2 = await request(app).get(history);
+    expect(response2.status).toEqual(401);
+    
+  });
+});
+// check incorrect tokken
+describe(history, () => {
+  it("get" + history, async () => {
+    const response2 = await request(app).get(history).set('Authorization', `Bearer ${Error_tokken}`);
+    expect(response2.status).toEqual(401);
+    
+  });
+});
+// check already active trip
+describe(drive, () => {
+  it("post" + drive, async () => {
+    const response2 = await request(app).post(drive).send({
+      "src": {
+          "lat": 43.48849834594833,
+          "lng": -80.54167768508073
+      },
+      "dst": {
+          "lat": 43.46897334449664,
+          "lng": -80.56300904300979
+      },
+      "route": [
+          {
+              "lat": 43.4885,
+              "lng": -80.54153000000001
+          },
+          {
+              "lat": 43.48774,
+              "lng": -80.54155
+          },
+          {
+              "lat": 43.48718,
+              "lng": -80.54146
+          },
+          {
+              "lat": 43.48682,
+              "lng": -80.54142
+          },
+          {
+              "lat": 43.48666,
+              "lng": -80.54136000000001
+          },
+          {
+              "lat": 43.48651,
+              "lng": -80.5413
+          },
+          {
+              "lat": 43.486160000000005,
+              "lng": -80.54113000000001
+          },
+          {
+              "lat": 43.4859,
+              "lng": -80.54095000000001
+          },
+          {
+              "lat": 43.485290000000006,
+              "lng": -80.54042000000001
+          },
+          {
+              "lat": 43.48443,
+              "lng": -80.53964
+          },
+          {
+              "lat": 43.48415000000001,
+              "lng": -80.54033000000001
+          },
+          {
+              "lat": 43.48402,
+              "lng": -80.54057
+          },
+          {
+              "lat": 43.483940000000004,
+              "lng": -80.54068000000001
+          },
+          {
+              "lat": 43.483830000000005,
+              "lng": -80.54076
+          },
+          {
+              "lat": 43.48306,
+              "lng": -80.54127000000001
+          },
+          {
+              "lat": 43.482490000000006,
+              "lng": -80.54162000000001
+          },
+          {
+              "lat": 43.48151,
+              "lng": -80.54219
+          },
+          {
+              "lat": 43.48127,
+              "lng": -80.54228
+          },
+          {
+              "lat": 43.48115000000001,
+              "lng": -80.54230000000001
+          },
+          {
+              "lat": 43.480920000000005,
+              "lng": -80.54231
+          },
+          {
+              "lat": 43.48067,
+              "lng": -80.54227
+          },
+          {
+              "lat": 43.480500000000006,
+              "lng": -80.54221000000001
+          },
+          {
+              "lat": 43.4802,
+              "lng": -80.54204
+          },
+          {
+              "lat": 43.479310000000005,
+              "lng": -80.54147
+          },
+          {
+              "lat": 43.47815000000001,
+              "lng": -80.54069000000001
+          },
+          {
+              "lat": 43.4774,
+              "lng": -80.54023000000001
+          },
+          {
+              "lat": 43.477000000000004,
+              "lng": -80.53997000000001
+          },
+          {
+              "lat": 43.47692000000001,
+              "lng": -80.54021
+          },
+          {
+              "lat": 43.47625,
+              "lng": -80.54204
+          },
+          {
+              "lat": 43.47605,
+              "lng": -80.54263
+          },
+          {
+              "lat": 43.47605,
+              "lng": -80.54275000000001
+          },
+          {
+              "lat": 43.47589000000001,
+              "lng": -80.54322
+          },
+          {
+              "lat": 43.47509,
+              "lng": -80.54553000000001
+          },
+          {
+              "lat": 43.47476,
+              "lng": -80.54653
+          },
+          {
+              "lat": 43.474500000000006,
+              "lng": -80.54728
+          },
+          {
+              "lat": 43.47384,
+              "lng": -80.54908
+          },
+          {
+              "lat": 43.47334,
+              "lng": -80.55040000000001
+          },
+          {
+              "lat": 43.47169,
+              "lng": -80.55501000000001
+          },
+          {
+              "lat": 43.47063000000001,
+              "lng": -80.55792000000001
+          },
+          {
+              "lat": 43.47052,
+              "lng": -80.5583
+          },
+          {
+              "lat": 43.470380000000006,
+              "lng": -80.55867
+          },
+          {
+              "lat": 43.469840000000005,
+              "lng": -80.56019
+          },
+          {
+              "lat": 43.46886000000001,
+              "lng": -80.56293000000001
+          }
+      ],
+      "dateTime": "2022-03-19T18:44:07.066Z",
+      "max_riders": "2"
+  }).set('Authorization', `Bearer ${token}`);
+    expect(response2.status).toEqual(400);
+    
+  });
+});
+
+
+// Create new Drive
+describe(drive, () => {
+  it("post" + drive, async () => {
+    const response2 = await request(app).post(drive).send({
+      "src": {
+          "lat": 43.48849834594833,
+          "lng": -80.54167768508073
+      },
+      "dst": {
+          "lat": 43.46897334449664,
+          "lng": -80.56300904300979
+      },
+      "route": [
+          {
+              "lat": 43.4885,
+              "lng": -80.54153000000001
+          },
+          {
+              "lat": 43.48774,
+              "lng": -80.54155
+          },
+          {
+              "lat": 43.48718,
+              "lng": -80.54146
+          },
+          {
+              "lat": 43.48682,
+              "lng": -80.54142
+          },
+          {
+              "lat": 43.48666,
+              "lng": -80.54136000000001
+          },
+          {
+              "lat": 43.48651,
+              "lng": -80.5413
+          },
+          {
+              "lat": 43.486160000000005,
+              "lng": -80.54113000000001
+          },
+          {
+              "lat": 43.4859,
+              "lng": -80.54095000000001
+          },
+          {
+              "lat": 43.485290000000006,
+              "lng": -80.54042000000001
+          },
+          {
+              "lat": 43.48443,
+              "lng": -80.53964
+          },
+          {
+              "lat": 43.48415000000001,
+              "lng": -80.54033000000001
+          },
+          {
+              "lat": 43.48402,
+              "lng": -80.54057
+          },
+          {
+              "lat": 43.483940000000004,
+              "lng": -80.54068000000001
+          },
+          {
+              "lat": 43.483830000000005,
+              "lng": -80.54076
+          },
+          {
+              "lat": 43.48306,
+              "lng": -80.54127000000001
+          },
+          {
+              "lat": 43.482490000000006,
+              "lng": -80.54162000000001
+          },
+          {
+              "lat": 43.48151,
+              "lng": -80.54219
+          },
+          {
+              "lat": 43.48127,
+              "lng": -80.54228
+          },
+          {
+              "lat": 43.48115000000001,
+              "lng": -80.54230000000001
+          },
+          {
+              "lat": 43.480920000000005,
+              "lng": -80.54231
+          },
+          {
+              "lat": 43.48067,
+              "lng": -80.54227
+          },
+          {
+              "lat": 43.480500000000006,
+              "lng": -80.54221000000001
+          },
+          {
+              "lat": 43.4802,
+              "lng": -80.54204
+          },
+          {
+              "lat": 43.479310000000005,
+              "lng": -80.54147
+          },
+          {
+              "lat": 43.47815000000001,
+              "lng": -80.54069000000001
+          },
+          {
+              "lat": 43.4774,
+              "lng": -80.54023000000001
+          },
+          {
+              "lat": 43.477000000000004,
+              "lng": -80.53997000000001
+          },
+          {
+              "lat": 43.47692000000001,
+              "lng": -80.54021
+          },
+          {
+              "lat": 43.47625,
+              "lng": -80.54204
+          },
+          {
+              "lat": 43.47605,
+              "lng": -80.54263
+          },
+          {
+              "lat": 43.47605,
+              "lng": -80.54275000000001
+          },
+          {
+              "lat": 43.47589000000001,
+              "lng": -80.54322
+          },
+          {
+              "lat": 43.47509,
+              "lng": -80.54553000000001
+          },
+          {
+              "lat": 43.47476,
+              "lng": -80.54653
+          },
+          {
+              "lat": 43.474500000000006,
+              "lng": -80.54728
+          },
+          {
+              "lat": 43.47384,
+              "lng": -80.54908
+          },
+          {
+              "lat": 43.47334,
+              "lng": -80.55040000000001
+          },
+          {
+              "lat": 43.47169,
+              "lng": -80.55501000000001
+          },
+          {
+              "lat": 43.47063000000001,
+              "lng": -80.55792000000001
+          },
+          {
+              "lat": 43.47052,
+              "lng": -80.5583
+          },
+          {
+              "lat": 43.470380000000006,
+              "lng": -80.55867
+          },
+          {
+              "lat": 43.469840000000005,
+              "lng": -80.56019
+          },
+          {
+              "lat": 43.46886000000001,
+              "lng": -80.56293000000001
+          }
+      ],
+      "dateTime": "2022-03-19T18:44:07.066Z",
+      "max_riders": "2"
+  }).set('Authorization', `Bearer ${token2}`);
+    expect(response2.status).toEqual(200);
+    
+  });
+});
+// Create a new user drive
+describe(drive, () => {
+  it("post" + drive, async () => {
+    const response2 = await request(app).post(drive).send({
+      "src": {
+          "lat": 43.48849834594833,
+          "lng": -80.54167768508073
+      },
+      "dst": {
+          "lat": 43.46897334449664,
+          "lng": -80.56300904300979
+      },
+      "route": [
+          {
+              "lat": 43.4885,
+              "lng": -80.54153000000001
+          },
+          {
+              "lat": 43.48774,
+              "lng": -80.54155
+          },
+          {
+              "lat": 43.48718,
+              "lng": -80.54146
+          },
+          {
+              "lat": 43.48682,
+              "lng": -80.54142
+          },
+          {
+              "lat": 43.48666,
+              "lng": -80.54136000000001
+          },
+          {
+              "lat": 43.48651,
+              "lng": -80.5413
+          },
+          {
+              "lat": 43.486160000000005,
+              "lng": -80.54113000000001
+          },
+          {
+              "lat": 43.4859,
+              "lng": -80.54095000000001
+          },
+          {
+              "lat": 43.485290000000006,
+              "lng": -80.54042000000001
+          },
+          {
+              "lat": 43.48443,
+              "lng": -80.53964
+          },
+          {
+              "lat": 43.48415000000001,
+              "lng": -80.54033000000001
+          },
+          {
+              "lat": 43.48402,
+              "lng": -80.54057
+          },
+          {
+              "lat": 43.483940000000004,
+              "lng": -80.54068000000001
+          },
+          {
+              "lat": 43.483830000000005,
+              "lng": -80.54076
+          },
+          {
+              "lat": 43.48306,
+              "lng": -80.54127000000001
+          },
+          {
+              "lat": 43.482490000000006,
+              "lng": -80.54162000000001
+          },
+          {
+              "lat": 43.48151,
+              "lng": -80.54219
+          },
+          {
+              "lat": 43.48127,
+              "lng": -80.54228
+          },
+          {
+              "lat": 43.48115000000001,
+              "lng": -80.54230000000001
+          },
+          {
+              "lat": 43.480920000000005,
+              "lng": -80.54231
+          },
+          {
+              "lat": 43.48067,
+              "lng": -80.54227
+          },
+          {
+              "lat": 43.480500000000006,
+              "lng": -80.54221000000001
+          },
+          {
+              "lat": 43.4802,
+              "lng": -80.54204
+          },
+          {
+              "lat": 43.479310000000005,
+              "lng": -80.54147
+          },
+          {
+              "lat": 43.47815000000001,
+              "lng": -80.54069000000001
+          },
+          {
+              "lat": 43.4774,
+              "lng": -80.54023000000001
+          },
+          {
+              "lat": 43.477000000000004,
+              "lng": -80.53997000000001
+          },
+          {
+              "lat": 43.47692000000001,
+              "lng": -80.54021
+          },
+          {
+              "lat": 43.47625,
+              "lng": -80.54204
+          },
+          {
+              "lat": 43.47605,
+              "lng": -80.54263
+          },
+          {
+              "lat": 43.47605,
+              "lng": -80.54275000000001
+          },
+          {
+              "lat": 43.47589000000001,
+              "lng": -80.54322
+          },
+          {
+              "lat": 43.47509,
+              "lng": -80.54553000000001
+          },
+          {
+              "lat": 43.47476,
+              "lng": -80.54653
+          },
+          {
+              "lat": 43.474500000000006,
+              "lng": -80.54728
+          },
+          {
+              "lat": 43.47384,
+              "lng": -80.54908
+          },
+          {
+              "lat": 43.47334,
+              "lng": -80.55040000000001
+          },
+          {
+              "lat": 43.47169,
+              "lng": -80.55501000000001
+          },
+          {
+              "lat": 43.47063000000001,
+              "lng": -80.55792000000001
+          },
+          {
+              "lat": 43.47052,
+              "lng": -80.5583
+          },
+          {
+              "lat": 43.470380000000006,
+              "lng": -80.55867
+          },
+          {
+              "lat": 43.469840000000005,
+              "lng": -80.56019
+          },
+          {
+              "lat": 43.46886000000001,
+              "lng": -80.56293000000001
+          }
+      ],
+      "dateTime": "2022-03-19T18:44:07.066Z",
+      "max_riders": "2"
+  }).set('Authorization', `Bearer ${token3}`);
+    expect(response2.status).toEqual(200);
+    
+  });
+});
+
+// ask for a ride
+describe(ride, () => {
+  it("post" + ride, async () => {
+    const response2 = await request(app).post(ride).send({
+      "src": {
+          "lat": 43.48849834594833,
+          "lng": -80.54167768508073
+      },
+      "dst": {
+          "lat": 43.46897334449664,
+          "lng": -80.56300904300979
+      },
+      "route": [
+        {
+          "src": {
+                  "lat": 43.4868212345,
+                  "lng": -80.541412345
+              },
+          "dst": {
+                  "lat": 43.474554312,
+                  "lng": -80.5472854312
+              },
+          
+      }
+      ],
+      "dateTime":"2022-03-19T18:47:07.066Z",
+  }).set('Authorization', `Bearer ${token4}`);
+    expect(response2.status).toEqual(200);
+    
+  });
+});
+
+// Ask for ride but ride not available
+describe(ride, () => {
+  it("post" + ride, async () => {
+    const response2 = await request(app).post(ride).send({
+      "src": {
+          "lat": 43.48849834594833,
+          "lng": -80.54167768508073
+      },
+      "dst": {
+          "lat": 43.46897334449664,
+          "lng": -80.56300904300979
+      },
+      "route": [
+        {
+          "src": {
+                  "lat": 43.4868212345,
+                  "lng": -80.541412345
+              },
+          "dst": {
+                  "lat": 43.474554312,
+                  "lng": -80.5472854312
+              },
+          
+      }
+      ],
+      "dateTime":"2023-03-19T18:47:07.066Z",
+  }).set('Authorization', `Bearer ${token4}`);
+    expect(response2.status).toEqual(400);
+    
+  });
+});
+
+// delete created trip
+describe(cancel, () => {
+  it("delete" + cancel, async () => {
+    const response2 = await request(app).delete(cancel).set('Authorization', `Bearer ${token2}`);
+    expect(response2.status).toEqual(200);
+    
+  });
+});
+
+// no trip present to delete
+describe(cancel, () => {
+  it("delete" + cancel, async () => {
+    const response2 = await request(app).delete(cancel).set('Authorization', `Bearer ${token2}`);
+    expect(response2.status).toEqual(400);
+    
+  });
+});
+
+// complete a on going trip
+
+describe(ongoingcomplete, () => {
+  it("post" + ongoingcomplete, async () => {
+    const response2 = await request(app).post(ongoingcomplete).set('Authorization', `Bearer ${token3}`);
+    expect(response2.status).toEqual(200);
+    
+  });
+});
+
+// check on completed already
+describe(ongoingcomplete, () => {
+  it("post" + ongoingcomplete, async () => {
+    const response2 = await request(app).post(ongoingcomplete).set('Authorization', `Bearer ${token2}`);
+    expect(response2.status).toEqual(400);
+    
+  });
+});
+// check active trip is present
+describe(active, () => {
+  it("get" + active, async () => {
+    const response2 = await request(app).get(active).set('Authorization', `Bearer ${token}`);
+    expect(response2.status).toEqual(200);
+    
+  });
+});
+// user checking active trip without sigining in
+describe(active, () => {
+  it("get" + active, async () => {
+    const response2 = await request(app).get(active);
+    expect(response2.status).toEqual(401);
+    
+  });
+});
+//check active is not present
+describe(active, () => {
+  it("get" + active, async () => {
+    const response2 = await request(app).get(active).set('Authorization', `Bearer ${token2}`);
+    expect(response2.status).toEqual(400);
+    
+  });
+});
+
+// user is actually a driver
+describe(drivertest, () => {
+  it("get" + drivertest, async () => {
+    const response2 = await request(app).get(drivertest).set('Authorization', `Bearer ${token}`);
+    expect(response2.status).toEqual(200);
+    
+  });
+});
+
+// user is not a driver
+describe(drivertest, () => {
+  it("get" + drivertest, async () => {
+    const response2 = await request(app).get(drivertest).set('Authorization', `Bearer ${token2}`);
+    expect(response2.status).toEqual(400);
+    
+  });
+});
+
+// get user trip history
+describe(drivertest, () => {
+  it("get" + drivertest, async () => {
+    const response2 = await request(app).get(drivertest).set('Authorization', `Bearer ${token}`);
+    expect(response2.status).toEqual(200);
+    
+  });
+});
+[FILE_END]backend/__test__/app.test.js
+
+[DIR_END]backend/__test__
+
+[FILE_START]backend/app.js
+const express = require('express');
+const mongoose = require('mongoose');
+const app = express();
+const bodyparser = require('body-parser');
+const cookieparser = require('cookie-parser');
+const cors = require("cors");
+const dotenv = require("dotenv");
+dotenv.config()
+const { Client } = require("@googlemaps/google-maps-services-js");
+const swaggerUI = require("swagger-ui-express");
+const YAML = require("yamljs");
+const swaggerDocument = YAML.load('./swagger.yaml');
+
+
+
+const authRoutes = require("./Routes/authentication");
+const allusersRoutes = require("./Routes/allusersRoutes");
+//const userRoutes = require("./Routes/user.js");
+const tripRoutes = require("./Routes/tripRoutes");
+
+// import cookieparser from "cookie-parser";
+// import cors from "cors";
+//import swaggerUI from "swagger-ui-express";
+//import YAML from 'yamljs';
+//import dotenv from "dotenv" 
+// import authRoutes from "./Routes/authentication.js";
+// import userRoutes from "./Routes/user.js";
+// import allusersRoutes from "./Routes/allusersRoutes.js";
+//const specs = swaggerJsDoc(options);
+//Middleware
+
+//PORT
+
+
+// MongoDb connection
+var db=mongoose.connect(process.env.DATABASE_URI).then(console.log("DB connected"))
+//.catch(error => console.log(error));
+
+//Middleware
+app.use(bodyparser.json())
+app.use(cookieparser())
+app.use(cors())
+
+//Routes
+app.use("/api", authRoutes);
+app.use("/api", allusersRoutes);
+//app.use("/api", userRoutes);
+app.use("/api", tripRoutes);
+app.use('/api-docs', swaggerUI.serve, swaggerUI.setup(swaggerDocument));
+
+app.listen(process.env.PORT || 8000, () => {
+    console.log(`Listening on a port`);
+})
+
+
+
+    
+module.exports = app;
+// MongoDb connection
+
+[FILE_END]backend/app.js
+
+[DIR_START]backend/assets
+[DIR_END]backend/assets
+
+[FILE_START]backend/nodemon.json
+{
+    "ext":".js,.json,.yaml,.jsx"
+}
+[FILE_END]backend/nodemon.json
+
+[FILE_START]backend/package.json
+{
+  "name": "backend",
+  "version": "1.0.0",
+  "description": "",
+  "main": "app.js",
+  "scripts": {
+    "start": "nodemon app.js",
+    "test": "jest --coverage --forceExit"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@googlemaps/google-maps-services-js": "^3.3.11",
+    "@mapbox/polyline": "^1.1.1",
+    "body-parser": "^1.19.1",
+    "cookie-parser": "^1.4.6",
+    "cors": "^2.8.5",
+    "distance-matrix-api": "^1.0.0",
+    "dotenv": "^14.3.2",
+    "express": "^4.17.2",
+    "express-jwt": "^6.1.0",
+    "express-validator": "^6.14.0",
+    "google-distance-matrix": "^1.1.1",
+    "jest": "^27.4.7",
+    "jsonwebtoken": "^8.5.1",
+    "mongoose": "^6.1.8",
+    "node-geometry-library": "^1.2.6",
+    "nodemon": "^2.0.15",
+    "supertest": "^6.2.2",
+    "swagger-jsdoc": "^6.1.0",
+    "swagger-ui-express": "^4.3.0",
+    "uuid": "^8.3.2",
+    "yamljs": "^0.3.0"
+  }
+}
+
+[FILE_END]backend/package.json
+
+[FILE_START]backend/steps_to_run_mongo
+sudo mongod --dbpath /System/Volumes/Data/data/db
+
+[FILE_END]backend/steps_to_run_mongo
+
+[FILE_START]backend/swagger.yaml
+openapi: 3.0.0
+info:
+  title: ShareMyGaddi
+  description: ShareMyGaddi ApI
+  version: 1.0.0
+servers:
+  - url: http://localhost:8000
+    description: Local API server
+  - url: https://ece651-backend.herokuapp.com
+    description: Heroku API server
+components:
+  securitySchemes:
+   bearerAuth:            
+    type: http
+    scheme: bearer
+    bearerFormat: JWT
+  schemas:
+   User:
+      type: object
+      required:
+        - Name
+        - LastName
+        - Email
+        - Encry_Password
+      properties:
+        id:
+          type: string
+          description: The auto-generated id of the User
+        Name:
+            type: string
+            description: First Name of User with Max length of 32
+        LastName:
+            type: string
+            description: First Name of User with Max length of 32
+        Email:
+            type: string
+            description: Email id of user
+        PhoneNumber:
+            type: Number
+            description: Contains Phone Number of User
+        Encry_Password:
+            type: string
+            description: Contains encrypted passwrod of user
+        Salt:
+            type: string
+            description: Contains encrypted Random generated string for encrypting password
+        User profile photo:
+            type: Buffer
+            description: User Photo stored in backend.
+        Rides:
+            type: Array
+            description: Array storing user rides.
+      example:
+        Name: harry
+        LastName: Taneja
+        Email: tanejaharry@gmail.com
+        PhoneNumber: 657 566 5678
+        Encry_Password: b4dc5cd
+        Salt: 3cf257hjdfs
+paths:
+  /api/signup:
+      post:
+        summary: Sigup user
+        tags: [Authentication]
+        requestBody:
+          required: true
+          content:
+            application/Json:
+                schema:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                    lastname:
+                      type: string
+                    email:
+                      type: string
+                    phone_number:
+                      type: number
+                    password:
+                      type: string
+                    user_photo:
+                      type: string
+        responses:
+              200:
+                description: Signing successfull ...
+                contens:
+                  application/json:
+                    schema:
+                      type: string
+              422:
+                  description: Input parametes entered are wrong...
+              401:
+                  description: Entered Email or Entered password is incorrect
+  /api/signin:
+      post:
+        summary: Sigin user
+        tags: [Authentication]
+        requestBody:
+          required: true
+          content:
+            application/Json:
+                schema:
+                  type: object
+                  properties:
+                    email:
+                      type: string 
+                    password:
+                      type: string
+                     
+        responses:
+          200:
+            description: Signing successfull ...
+            contens:
+              application/json:
+                schema:
+                type: string
+    
+          422:
+            description: Input parametes entered are wrong...
+          400:
+            description: Entered Email does not exists...
+          401:
+            description: Entered Email or Entered password is incorrect...              
+  /api/signout:
+      get:
+        summary: Signout
+        tags: [Authentication]
+        security: 
+          - bearerAuth: []
+        responses:
+          200:
+            description: Signout successful
+          400:
+            description: Bad Request ... 
+  /api/trip/drive:
+      post:
+        summary: Make a Drive
+        tags: [Drive]
+        security: 
+          - bearerAuth: []
+        requestBody:
+          required: true
+          content:
+            application/Json:
+                schema:
+                  type: object
+                  properties:
+                    src:
+                      type: object
+                      example: 
+                        lat: 43.48849834594833 
+                        lng: -80.54167768508073
+                      required: true 
+                    dst:
+                      type: object
+                      example: 
+                        lat: 43.46897334449664 
+                        lng: -80.56300904300979
+                      required: true
+                    route: 
+                      type: array
+                      item: object
+                      example:
+                        [
+                          
+                        { lat: 43.4885, lng: -80.54153000000001},{lat: 43.48774,lng: -80.54155},{lat: 43.48718,lng: -80.54146},{lat: 43.48682,lng: -80.54142}, {lat: 43.48666,lng: -80.54136000000001}, {lat: 43.48651,lng: -80.5413},{lat: 43.486160000000005,lng: -80.54113000000001},{lat:43.4859,lng: -80.54095000000001},{lat: 43.485290000000006,lng: -80.54042000000001}, {lat: 43.48443,lng: -80.53964},{lat: 43.48415000000001,lng: -80.54033000000001},{lat: 43.48402,lng: -80.54057},{lat: 43.483940000000004,lng: -80.54068000000001},{lat: 43.483830000000005,lng: -80.54076},{lat: 43.48306,lng: -80.54127000000001},{lat: 43.482490000000006,lng: -80.54162000000001},{lat: 43.48151,lng: -80.54219},{lat: 43.48127,lng: -80.54228},{lat: 43.48115000000001,lng: -80.54230000000001},{lat: 43.480920000000005,lng: -80.54231},{lat: 43.48067,lng: -80.54227},{lat: 43.480500000000006,lng: -80.54221000000001},{lat: 43.4802,lng: -80.54204},{lat:43.479310000000005,lng: -80.54147},{lat: 43.47815000000001,lng: -80.54069000000001},{lat: 43.4774,lng: -80.54023000000001},{lat: 43.477000000000004,lng: -80.53997000000001},{lat: 43.47692000000001,lng: -80.54021},{lat: 43.47625,lng: -80.54204},{lat: 43.47605,lng: -80.54263},{lat: 43.47605,lng: -80.54275000000001},{lat: 43.47589000000001,lng: -80.54322},{lat: 43.47509,lng: -80.54553000000001},{lat: 43.47476,lng: -80.54653},{lat:43.474500000000006,lng: -80.54728},{lat: 43.47384,lng: -80.54908},{lat: 43.47334, lng: -80.55040000000001},{lat: 43.47169,lng: -80.55501000000001},{lat: 43.47063000000001,lng: -80.55792000000001},{lat: 43.47052,lng: -80.5583},{lat: 43.470380000000006,lng: -80.55867},{lat: 43.469840000000005,lng: -80.56019},{lat: 43.46886000000001,lng: -80.56293000000001}
+                        ]  
+                    dateTime:
+                      type: string 
+                      example: 2022-03-19T18:44:07.066Z
+                      required: true
+                    max_riders:
+                      type: number
+                      minimum: 1
+                      maximum: 3  
+                     
+        responses:
+          200:
+            description: Trip was succesfull
+          400:
+            description: Trip already Exits
+          401:  
+            description: User not signed in  
+          500:
+            description: Server Error 
+  /api/trip:
+      post:
+        summary: Cancel Trip
+        tags: [Drive]
+        security: 
+          - bearerAuth: []
+  /api/trip/ride:
+      post:
+        summary: Ride
+        tags: [Drive]
+        security: 
+          - bearerAuth: []
+        requestBody:
+          required: true
+          content:
+            application/Json:
+                schema:
+                  type: object
+                  properties:
+                    src:
+                      type: object
+                      example: 
+                        lat: 43.4868212345 
+                        lng: -80.541412345
+                      required: true 
+                    dst:
+                      type: object
+                      example: 
+                        lat: 43.474554312 
+                        lng: -80.5472854312
+                      required: true 
+                    dateTime:
+                      type: string 
+                      example: 2022-03-19T18:47:07.066Z  
+        responses:
+          200:
+            description: Ride succesfull found
+          400:
+            description: No Ride found on specified path or time
+          401:  
+            description: User not signed in  
+          500:
+            description: Server Error        
+  /api/trip/history:
+      get:
+        summary: Get Trip History
+        tags: [Drive]
+        security: 
+          - bearerAuth: []
+        
+        responses:
+          200:
+            description: Ride succesfull found
+          400:
+            description: No Ride found on specified path or time
+          401:  
+            description: User not signed in  
+          500:
+            description: Server Error
+  /api/trip/done:
+      post:
+        summary: Complete Active Trip
+        tags: [Drive]
+        security: 
+          - bearerAuth: []
+        
+        responses:
+          200:
+            description: Ride succesfull found
+          400:
+            description: No Ride found on specified path or time
+          401:  
+            description: User not signed in
+          500:
+            description: Server Error
+  /api/trip/isdriver:
+      get:
+        summary: Get Status of driver
+        tags: [Drive]
+        security: 
+          - bearerAuth: []
+        
+        responses:
+          200:
+            description: Drivers status Found
+          401:  
+            description: User not signed in
+          500:
+            description: Server Error                                         
+                                     
+
+  /api/trip/activetrip:
+      get:
+        summary: Get Status of active trip
+        tags: [Drive]
+        security: 
+          - bearerAuth: []
+        
+        responses:
+          200:
+            description: Drivers status Found
+          401:  
+            description: User not signed in
+          500:
+            description: Server Error        
+        
+   
+
+  
+
+[FILE_END]backend/swagger.yaml
+
+[DIR_END]backend
+
+[DIR_START]frontend
+[FILE_START]frontend/README.md
+# Getting Started with Create React App
+
+This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+
+## Available Scripts
+
+In the project directory, you can run:
+
+### `npm start`
+
+Runs the app in the development mode.\
+Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+
+The page will reload when you make changes.\
+You may also see any lint errors in the console.
+
+### `npm test`
+
+Launches the test runner in the interactive watch mode.\
+See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+
+### `npm run build`
+
+Builds the app for production to the `build` folder.\
+It correctly bundles React in production mode and optimizes the build for the best performance.
+
+The build is minified and the filenames include the hashes.\
+Your app is ready to be deployed!
+
+See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+
+### `npm run eject`
+
+**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+
+If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+
+Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+
+You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+
+## Learn More
+
+You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+
+To learn React, check out the [React documentation](https://reactjs.org/).
+
+### Code Splitting
+
+This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
+
+### Analyzing the Bundle Size
+
+This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
+
+### Making a Progressive Web App
+
+This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
+
+### Advanced Configuration
+
+This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
+
+### Deployment
+
+This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
+
+### `npm run build` fails to minify
+
+This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+
+[FILE_END]frontend/README.md
+
+[DIR_START]frontend/cypress
+[DIR_START]frontend/cypress/fixtures
+[FILE_START]frontend/cypress/fixtures/example.json
+{
+  "name": "Using fixtures to represent data",
+  "email": "hello@cypress.io",
+  "body": "Fixtures are a great way to mock data for responses to routes"
+}
+
+[FILE_END]frontend/cypress/fixtures/example.json
+
+[DIR_END]frontend/cypress/fixtures
+
+[DIR_START]frontend/cypress/integration
+[DIR_START]frontend/cypress/integration/ActiveTrip
+[FILE_START]frontend/cypress/integration/ActiveTrip/active_trip_test.js
+it.only('active trip done',function()
+{   
+    cy.visit ("/login") 
+
+    cy.get('[data-test="email-form-control"]').type("activetrip@gmail.com")
+    cy.get('[data-test="password-form-control"]').type("activetrip")
+    cy.get('[data-test="login-button"]').click()
+    cy.wait(2000)
+
+    cy.get('#doneTripButton').click()
+    cy.wait(2000)
+})
+
+it.only('active trip cancel',function()
+{   
+    cy.visit ("/login") 
+
+    cy.get('[data-test="email-form-control"]').type("activetrip1@gmail.com")
+    cy.get('[data-test="password-form-control"]').type("activetrip1")
+    cy.get('[data-test="login-button"]').click()
+    cy.wait(2000)
+
+    cy.get('#cancelTripButton').click()
+    cy.wait(2000)
+})
+
+[FILE_END]frontend/cypress/integration/ActiveTrip/active_trip_test.js
+
+[DIR_END]frontend/cypress/integration/ActiveTrip
+
+[DIR_START]frontend/cypress/integration/Auth
+[FILE_START]frontend/cypress/integration/Auth/login_test.js
+it.only('login test',function()
+{
+    cy.visit ("/login") 
+     
+    if(cy.get('[data-test="login-form"]').length >0){
+        console.log("login button is present")
+    }
+
+    cy.get('[data-test="email-form-control"]').type("user1@gmail.com")
+    cy.get('[data-test="password-form-control"]').type("user1")
+    cy.get('[data-test="login-button"]').click()
+    cy.wait(2000)
+
+//     cy.get('.navbar').click()   
+//    cy.get('[data-test="drive-button"]').click()
+//    cy.get('[data-test="ride-button"]').click()
+// it.only('drive test',function()
+// {
+//     cy.visit ("http://localhost:3000/drive")      
+//    cy.get('[data-test="source-button"]').click()
+//    cy.get('[data-test="destination-button"]').click()
+//    cy.get('.col-auto > [data-test="ride-button"]').click()
+
+// })
+// it.only('Ride test',function()
+// {    
+//     cy.visit ("http://localhost:3000/ride") 
+//    cy.get('[data-test="destination-button"]').click()
+//    cy.get('[data-test="source-button"]').click()
+//    cy.get('.col-auto > [data-test="ride-button"]').click()
+
+})
+
+it.only('login test fail',function()
+{
+    cy.visit ("/login") 
+     
+    if(cy.get('[data-test="login-form"]').length >0){
+        console.log("login button is present")
+    }
+
+    cy.get('[data-test="email-form-control"]').type("user1@gmail.com")
+    cy.get('[data-test="password-form-control"]').type("user2")
+    cy.get('[data-test="login-button"]').click()
+    cy.wait(2000)
+})
+
+
+[FILE_END]frontend/cypress/integration/Auth/login_test.js
+
+[FILE_START]frontend/cypress/integration/Auth/logout_test.js
+it.only('logout test',function()
+{
+    cy.visit ("/login") 
+
+    cy.get('[data-test="email-form-control"]').type("user1@gmail.com")
+    cy.get('[data-test="password-form-control"]').type("user1")
+    cy.get('[data-test="login-button"]').click()
+    cy.get('#hamburger').click()
+
+    cy.get('[data-test="logout-button"]').click()
+})
+
+
+
+[FILE_END]frontend/cypress/integration/Auth/logout_test.js
+
+[FILE_START]frontend/cypress/integration/Auth/signup_test.js
+it.only('signup test',function()
+{
+    cy.visit ("/signup") 
+
+    cy.get('[data-test="first-name-form-control"]').type("New")
+    cy.get('[data-test="last-name-form-control"]').type("User")
+    cy.get('[data-test="email-form-control"]').type("newuser@gmail.com")
+    cy.get('[data-test="password-form-control"]').type("newuser")
+    cy.get('[data-test="conf-password-form-control"]').type("newuser")
+    cy.get('[data-test="signup-button"]').click()
+    cy.get('#hamburger').click()
+
+    cy.get('[data-test="delete-button"]').click()
+    cy.wait(1000)
+})
+
+it.only('signup test fail',function()
+{
+    cy.visit ("/signup") 
+
+    cy.get('[data-test="first-name-form-control"]').type("New")
+    cy.get('[data-test="last-name-form-control"]').type("User")
+    cy.get('[data-test="email-form-control"]').type("user1@gmail.com")
+    cy.get('[data-test="password-form-control"]').type("newuser")
+    cy.get('[data-test="conf-password-form-control"]').type("newuser")
+    cy.get('[data-test="signup-button"]').click()
+
+    cy.wait(1000)
+})
+
+
+
+[FILE_END]frontend/cypress/integration/Auth/signup_test.js
+
+[DIR_END]frontend/cypress/integration/Auth
+
+[DIR_START]frontend/cypress/integration/Drive
+[FILE_START]frontend/cypress/integration/Drive/drive_test.js
+it.only('map close',function()
+{
+   cy.visit ("http://localhost:3000/login") 
+
+    cy.get('[data-test="email-form-control"]').type("activetrip@gmail.com")
+    cy.get('[data-test="password-form-control"]').type("activetrip")
+    cy.get('[data-test="login-button"]').click()
+    cy.wait(2000)
+
+   cy.get('[data-test="drive-button"]').click()
+   cy.get('[data-test="source-button"]').click()
+   cy.get('[data-test="model-body"]').click()
+   cy.get('[data-test="close-button"]').click()
+   
+})
+
+it.only('drive test',function()
+{
+   // Repeating drive for 2 users (One for 'done' and other for 'cancel')
+   let userid = ["activetrip@gmail.com","activetrip1@gmail.com"]
+   let password = ["activetrip","activetrip1"]
+   for(let i=0; i<2; i++){
+      cy.visit ("http://localhost:3000/login") 
+
+      cy.get('[data-test="email-form-control"]').type(userid[i])
+      cy.get('[data-test="password-form-control"]').type(password[i])
+      cy.get('[data-test="login-button"]').click()
+      cy.wait(2000)
+
+      cy.get('[data-test="drive-button"]').click()
+      
+      cy.get('[data-test="source-button"]').click()
+      cy.get('[data-test="map-search"]').type("69 Columbia Street West")
+      cy.wait(1000)
+      cy.get('.pac-item', { timeout: 10000 }).should('be.visible');
+      cy.get('[data-test="map-search"]').type('{downarrow}');
+      cy.get('[data-test="map-search"]').type('{enter}',{delay:100});
+      cy.get('[data-test="map-select"]').click()
+
+      cy.get('[data-test="destination-button"]').click()
+      cy.get('[data-test="map-search"]').type("62 University Avenue East")
+      cy.wait(1000)
+      cy.get('.pac-item', { timeout: 10000 }).should('be.visible');
+      cy.get('[data-test="map-search"]').type('{downarrow}');
+      cy.get('[data-test="map-search"]').type('{enter}',{delay:100});
+      cy.get('[data-test="map-select"]').click()
+
+      cy.get('.form-select').select('One')
+      cy.wait(1000)
+      cy.get('[data-test="drive-submit-button"]').click()
+      cy.wait(2000)
+
+      cy.get('#hamburger').click()
+
+    cy.get('[data-test="logout-button"]').click()
+   }
+})
+
+
+[FILE_END]frontend/cypress/integration/Drive/drive_test.js
+
+[FILE_START]frontend/cypress/integration/Drive/ride_test.js
+it.only('ride test',function()
+{
+    cy.visit ("http://localhost:3000/login") 
+
+    cy.get('[data-test="email-form-control"]').type("rider1@gmail.com")
+    cy.get('[data-test="password-form-control"]').type("rider1")
+    cy.get('[data-test="login-button"]').click()
+    cy.wait(2000)
+
+    cy.get('[data-test="ride-button"]').click()
+    
+    cy.get('[data-test="source-button"]').click()
+    cy.get('[data-test="map-search"]').type("69 Columbia Street West")
+    cy.wait(1000)
+    cy.get('.pac-item', { timeout: 10000 }).should('be.visible');
+    cy.get('[data-test="map-search"]').type('{downarrow}');
+    cy.get('[data-test="map-search"]').type('{enter}',{delay:100});
+    cy.get('[data-test="map-select"]').click()
+
+    cy.get('[data-test="destination-button"]').click()
+    cy.get('[data-test="map-search"]').type("62 University Avenue East")
+    cy.wait(1000)
+    cy.get('.pac-item', { timeout: 10000 }).should('be.visible');
+    cy.get('[data-test="map-search"]').type('{downarrow}');
+    cy.get('[data-test="map-search"]').type('{enter}',{delay:100});
+    cy.get('[data-test="map-select"]').click()
+
+    cy.get('[data-test="ride-submit-button"]').click()
+    cy.wait(2000)
+
+    cy.get('#cancelTripButton').click()
+    cy.wait(2000)
+
+})
+
+it.only('ride fail',function()
+{
+    cy.visit ("http://localhost:3000/login") 
+
+    cy.get('[data-test="email-form-control"]').type("rider1@gmail.com")
+    cy.get('[data-test="password-form-control"]').type("rider1")
+    cy.get('[data-test="login-button"]').click()
+    cy.wait(2000)
+
+    cy.get('[data-test="ride-button"]').click()
+    
+    cy.get('[data-test="source-button"]').click()
+    cy.get('[data-test="map-search"]').type("69 Columbia Street West")
+    cy.wait(1000)
+    cy.get('.pac-item', { timeout: 10000 }).should('be.visible');
+    cy.get('[data-test="map-search"]').type('{downarrow}');
+    cy.get('[data-test="map-search"]').type('{enter}',{delay:100});
+    cy.get('[data-test="map-select"]').click()
+
+    cy.get('[data-test="destination-button"]').click()
+    cy.get('[data-test="map-search"]').type("Wilfred Laurier University")
+    cy.wait(1000)
+    cy.get('.pac-item', { timeout: 10000 }).should('be.visible');
+    cy.get('[data-test="map-search"]').type('{downarrow}');
+    cy.get('[data-test="map-search"]').type('{enter}',{delay:100});
+    cy.get('[data-test="map-select"]').click()
+
+    cy.get('[data-test="ride-submit-button"]').click()
+    cy.wait(2000)
+})
+
+
+[FILE_END]frontend/cypress/integration/Drive/ride_test.js
+
+[DIR_END]frontend/cypress/integration/Drive
+
+[DIR_START]frontend/cypress/integration/Not Found
+[FILE_START]frontend/cypress/integration/Not Found/not_found_test.js
+it.only('not found test',function()
+{
+    cy.visit ("/notfound") 
+})
+[FILE_END]frontend/cypress/integration/Not Found/not_found_test.js
+
+[DIR_END]frontend/cypress/integration/Not Found
+
+[DIR_START]frontend/cypress/integration/TripHistory
+[FILE_START]frontend/cypress/integration/TripHistory/trip_history_test.js
+it.only('trip history test',function()
+{   
+  
+    cy.visit ("/login") 
+
+    cy.get('[data-test="email-form-control"]').type("user1@gmail.com")
+    cy.get('[data-test="password-form-control"]').type("user1")
+    cy.get('[data-test="login-button"]').click()
+    cy.wait(3000)
+})
+
+[FILE_END]frontend/cypress/integration/TripHistory/trip_history_test.js
+
+[DIR_END]frontend/cypress/integration/TripHistory
+
+[DIR_END]frontend/cypress/integration
+
+[DIR_START]frontend/cypress/plugins
+[FILE_START]frontend/cypress/plugins/index.js
+/// <reference types="cypress" />
+// ***********************************************************
+// This example plugins/index.js can be used to load plugins
+//
+// You can change the location of this file or turn off loading
+// the plugins file with the 'pluginsFile' configuration option.
+//
+// You can read more here:
+// https://on.cypress.io/plugins-guide
+// ***********************************************************
+
+// This function is called when a project is opened or re-opened (e.g. due to
+// the project's config changing)
+
+/**
+ * @type {Cypress.PluginConfig}
+ */
+// eslint-disable-next-line no-unused-vars
+module.exports = (on, config) => {
+  require('@cypress/code-coverage/task')(on, config)
+  // `on` is used to hook into various events Cypress emits
+  // `config` is the resolved Cypress config
+  on('before:browser:launch', (browser, launchOptions) => {
+    if (browser.name === 'chrome' && browser.isHeadless) {
+      launchOptions.args.push('--disable-gpu');
+      return launchOptions
+    }
+  });
+  return config
+}
+
+[FILE_END]frontend/cypress/plugins/index.js
+
+[DIR_END]frontend/cypress/plugins
+
+[DIR_START]frontend/cypress/support
+[FILE_START]frontend/cypress/support/commands.js
+// ***********************************************
+// This example commands.js shows you how to
+// create various custom commands and overwrite
+// existing commands.
+//
+// For more comprehensive examples of custom
+// commands please read more here:
+// https://on.cypress.io/custom-commands
+// ***********************************************
+//
+//
+// -- This is a parent command --
+// Cypress.Commands.add('login', (email, password) => { ... })
+//
+//
+// -- This is a child command --
+// Cypress.Commands.add('drag', { prevSubject: 'element'}, (subject, options) => { ... })
+//
+//
+// -- This is a dual command --
+// Cypress.Commands.add('dismiss', { prevSubject: 'optional'}, (subject, options) => { ... })
+//
+//
+// -- This will overwrite an existing command --
+// Cypress.Commands.overwrite('visit', (originalFn, url, options) => { ... })
+
+[FILE_END]frontend/cypress/support/commands.js
+
+[FILE_START]frontend/cypress/support/index.js
+// ***********************************************************
+// This example support/index.js is processed and
+// loaded automatically before your test files.
+//
+// This is a great place to put global configuration and
+// behavior that modifies Cypress.
+//
+// You can change the location of this file or turn off
+// automatically serving support files with the
+// 'supportFile' configuration option.
+//
+// You can read more here:
+// https://on.cypress.io/configuration
+// ***********************************************************
+
+// Import commands.js using ES2015 syntax:
+import './commands'
+import '@cypress/code-coverage/support'
+
+// Alternatively you can use CommonJS syntax:
+// require('./commands')
+
+[FILE_END]frontend/cypress/support/index.js
+
+[DIR_END]frontend/cypress/support
+
+[DIR_END]frontend/cypress
+
+[FILE_START]frontend/cypress.json
+{
+    "baseUrl":"http://localhost:3000/",  
+    "defaultCommandTimeout":20000,
+    "testFiles": [
+        "Auth/login_test.js",
+        "Auth/logout_test.js",
+        "Auth/signup_test.js",
+        "TripHistory/trip_history_test.js",
+        "Not Found/not_found_test.js",
+        "Drive/drive_test.js",
+        "Drive/ride_test.js",
+        "ActiveTrip/active_trip_test.js"
+      ]
+}
+
+[FILE_END]frontend/cypress.json
+
+[FILE_START]frontend/next.conf.js
+require('dotenv').config();
+
+module.exports = {
+    env: {
+        REACT_APP_MAPS_API_KEY: process.env.REACT_APP_MAPS_API_KEY,
+        REACT_APP_END_POINT: process.env.REACT_APP_END_POINT,
+    }
+}
+[FILE_END]frontend/next.conf.js
+
+[FILE_START]frontend/package.json
+{
+  "name": "frontend",
+  "version": "0.1.0",
+  "private": true,
+  "dependencies": {
+    "@cypress/instrument-cra": "^1.4.0",
+    "@react-google-maps/api": "^2.7.0",
+    "@testing-library/jest-dom": "^5.16.1",
+    "@testing-library/user-event": "^13.5.0",
+    "bootstrap": "^5.1.3",
+    "cypress": "^9.5.3",
+    "dotenv": "^16.0.0",
+    "enzyme": "^3.11.0",
+    "enzyme-adapter-react-16": "^1.15.6",
+    "js-cookie": "^3.0.1",
+    "react": "^16.14.0",
+    "react-bootstrap": "^2.1.1",
+    "react-datepicker": "^4.7.0",
+    "react-dom": "^16.14.0",
+    "react-geocode": "^0.2.3",
+    "react-icons": "^4.3.1",
+    "react-router-dom": "^6.2.1",
+    "react-scripts": "5.0.0",
+    "web-vitals": "^2.1.4"
+  },
+  "scripts": {
+    "start": "react-scripts -r @cypress/instrument-cra start",
+    "build": "react-scripts build",
+    "test": "react-scripts test",
+    "eject": "react-scripts eject"
+  },
+  "eslintConfig": {
+    "extends": [
+      "react-app",
+      "react-app/jest"
+    ]
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  },
+  "devDependencies": {
+    "@cypress/code-coverage": "^3.9.12",
+    "@testing-library/react": "^12.1.3",
+    "cypress": "^9.5.3",
+    "jest-dom": "^4.0.0",
+    "nyc": "^15.1.0",
+    "react-test-renderer": "^16.14.0"
+  }
+}
+
+[FILE_END]frontend/package.json
+
+[DIR_START]frontend/public
+[FILE_START]frontend/public/index.html
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="icon" href="%PUBLIC_URL%/favicon.ico" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#000000" />
+    <meta
+      name="description"
+      content="Web site created using create-react-app"
+    />
+    <link rel="apple-touch-icon" href="%PUBLIC_URL%/logo192.png" />
+    <!--
+      manifest.json provides metadata used when your web app is installed on a
+      user's mobile device or desktop. See https://developers.google.com/web/fundamentals/web-app-manifest/
+    -->
+    <link rel="manifest" href="%PUBLIC_URL%/manifest.json" />
+    <!--
+      Notice the use of %PUBLIC_URL% in the tags above.
+      It will be replaced with the URL of the `public` folder during the build.
+      Only files inside the `public` folder can be referenced from the HTML.
+
+      Unlike "/favicon.ico" or "favicon.ico", "%PUBLIC_URL%/favicon.ico" will
+      work correctly both with client-side routing and a non-root public URL.
+      Learn how to configure a non-root public URL by running `npm run build`.
+    -->
+    <title>ShareMyGaddi</title>
+  </head>
+  <body>
+    <noscript>You need to enable JavaScript to run this app.</noscript>
+    <div id="root"></div>
+    <!--
+      This HTML file is a template.
+      If you open it directly in the browser, you will see an empty page.
+
+      You can add webfonts, meta tags, or analytics to this file.
+      The build step will place the bundled scripts into the <body> tag.
+
+      To begin the development, run `npm start` or `yarn start`.
+      To create a production bundle, use `npm run build` or `yarn build`.
+    -->
+  </body>
+</html>
+
+[FILE_END]frontend/public/index.html
+
+[FILE_START]frontend/public/manifest.json
+{
+  "short_name": "React App",
+  "name": "Create React App Sample",
+  "icons": [
+    {
+      "src": "favicon.ico",
+      "sizes": "64x64 32x32 24x24 16x16",
+      "type": "image/x-icon"
+    },
+    {
+      "src": "logo192.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "logo512.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#000000",
+  "background_color": "#ffffff"
+}
+
+[FILE_END]frontend/public/manifest.json
+
+[FILE_START]frontend/public/robots.txt
+# https://www.robotstxt.org/robotstxt.html
+User-agent: *
+Disallow:
+
+[FILE_END]frontend/public/robots.txt
+
+[DIR_END]frontend/public
+
+[DIR_START]frontend/src
+[FILE_START]frontend/src/App.css
+@import url('https://fonts.googleapis.com/css2?family=Lato&display=swap');
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  font-family: 'Lato', sans-serif;
+}
+
+.home,
+.reports,
+.products {
+  display: flex;
+  height: 90vh;
+  align-items: center;
+  justify-content: center;
+  font-size: 3rem;
+}
+
+
+/* .App {
+  text-align: center;
+}
+
+.App-logo {
+  height: 40vmin;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .App-logo {
+    animation: App-logo-spin infinite 20s linear;
+  }
+}
+
+.App-header {
+  background-color: #282c34;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-size: calc(10px + 2vmin);
+  color: white;
+}
+
+.App-link {
+  color: #61dafb;
+}
+
+@keyframes App-logo-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+} */
+
+[FILE_END]frontend/src/App.css
+
+[FILE_START]frontend/src/App.js
+// import logo from './logo.svg';
+import React from 'react';
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import './App.css';
+import 'bootstrap/dist/css/bootstrap.css'
+import Login from './components/auth/Login';
+import SignUp from './components/auth/SignUp';
+import useToken from './libraries/UseToken';
+import Navbar from './components/navbar/Navbar';
+import NotFound from './components/misc/NotFound';
+import TripHistory from './components/triphistory/TripHistory';
+import ActiveTrip from './components/activetrip/ActiveTrip';
+import { useLoadScript } from '@react-google-maps/api';
+import DriveRide from './components/main/DriveRide';
+import UseActiveTrip from './libraries/UseActiveTrip';
+
+const libraries = ['places'];
+
+function App() {
+  const { activeTrip, setActiveTrip } = UseActiveTrip();
+  const { token, name, setToken } = useToken(setActiveTrip);
+
+  const { isLoaded, loadError } = useLoadScript({
+    googleMapsApiKey: process.env.REACT_APP_MAPS_API_KEY,
+    libraries
+  });
+
+  if (loadError) return <h1>Map load error</h1>;
+  if (!isLoaded) return <h1>Loading...</h1>;
+
+  return (
+    <Router>
+      <Navbar setToken={setToken} activeTrip={activeTrip} name={name} />
+      <Routes>
+        <Route exact path='/' element={activeTrip ? <Navigate to="/active-trip" /> : <Navigate to="/trip-history" />} />
+        <Route exact path='/login' element={token ? <Navigate to="/" /> : <Login setToken={setToken} setActiveTrip={setActiveTrip} />} />
+        <Route exact path='/signup' element={token ? <Navigate to="/" /> : <SignUp setToken={setToken} />} />
+        <Route exact path='/drive' element={activeTrip ? <Navigate to="/active-trip" /> : (token ? <DriveRide type='drive' setToken={setToken} setActiveTrip={setActiveTrip} /> : <Navigate to="/login" />)} />
+        <Route exact path='/ride' element={activeTrip ? <Navigate to="/active-trip" /> : (token ? <DriveRide type='ride' setToken={setToken} setActiveTrip={setActiveTrip} /> : <Navigate to="/login" />)} />
+        <Route exact path='/active-trip' element={token ? (activeTrip ? <ActiveTrip setActiveTrip={setActiveTrip}/> : <Navigate to="/trip-history" />) : <Navigate to="/login" />} />
+        <Route exact path='/trip-history' element={token ? <TripHistory /> : <Navigate to="/login" />} />
+        <Route path='*' element={<NotFound />} />
+      </Routes>
+    </Router>
+  );
+}
+export default App;
+
+[FILE_END]frontend/src/App.js
+
+[FILE_START]frontend/src/App.test.js
+import { render, screen } from '@testing-library/react';
+import App from './App';
+
+
+// test('renders learn react link', () => {
+//   render(<App />);
+//   const linkElement = screen.getByText(/learn react/i);
+//   expect(linkElement).toBeInTheDocument();
+// });
+
+it("renders without crashing", () => {
+  render(<App />);
+});
+
+
+
+// test('renders learn react link', () => {
+//   render(<App />);
+//   const linkElement = screen.getByText(/learn react/i);
+//   expect(linkElement).toBeInTheDocument();
+// });
+
+[FILE_END]frontend/src/App.test.js
+
+[DIR_START]frontend/src/components
+[DIR_START]frontend/src/components/activetrip
+[FILE_START]frontend/src/components/activetrip/ActiveTrip.css
+#mainContainer{
+    display: flex;
+    flex-direction: column;
+
+}
+
+#activeTripContainer {
+    display: flex;
+    flex-direction: column;
+
+    align-items: center;
+    justify-content: center;
+}
+
+#mapContainer {
+    display: flex;
+    width: 40%;
+
+    align-items: center;
+    justify-content: center;
+
+    margin-top: 1.25rem;
+}
+
+.active-trip-card {
+    display: flex;
+    flex-direction: column;
+
+    align-items: center;
+    justify-content: center;
+
+    width: 95%;
+    height: 20%;
+    
+    background-color: rgb(250, 246, 246);
+    border: .125rem solid black;
+}
+
+#cancelTripButton{
+    margin-top: .625rem;
+}
+
+#pageTitle{
+    text-align: center;
+
+    margin: 1.25rem;
+
+    font-size: 3.25rem;
+    color : #060b26;
+}
+
+.trip-attributes{
+    font-weight: bold;
+}
+[FILE_END]frontend/src/components/activetrip/ActiveTrip.css
+
+[FILE_START]frontend/src/components/activetrip/ActiveTrip.js
+import { React, useState, useEffect, useRef } from 'react';
+import { Button, Col, Container, Row } from 'react-bootstrap';
+import { GoogleMap, DirectionsRenderer, DirectionsService, Marker } from '@react-google-maps/api';
+import Cookies from 'js-cookie';
+import Geocode from "react-geocode";
+
+import './ActiveTrip.css'
+
+Geocode.setApiKey(process.env.REACT_APP_MAPS_API_KEY);
+// Map options
+const mapContainerStyle = {
+    height: "35vh",
+    width: "100%",
+};
+const options = {
+    disableDefaultUI: true,
+    zoomControl: true,
+};
+const center = {
+    lat: 43.473078230478336,
+    lng: -80.54225947407059,
+};
+export default function ActiveTrip({ setActiveTrip }) {
+    // For Map
+    const [mapCoords, setMapCoords] = useState({})
+    const [routeResp, setRouteResp] = useState();
+    const [waypoints, setWaypoints] = useState([]);
+    const mapRef = useRef();
+
+    const onMapLoad = (map) => {
+        mapRef.current = map;
+    };
+
+    const directionsCallback = (response) => {
+        if (response !== null) {
+            if (response.status === 'OK')
+                setRouteResp(response)
+            else
+                alert('Problem fetching directions')
+        } else alert('Problem fetching directions')
+    }
+
+    // Format date and time
+    const getDateandTime = (dtString) => {
+        const d = new Date(dtString);
+        let date = d.toDateString();
+        dtString = d.toTimeString();
+        let time = dtString.split(' ')[0].split(':')
+        return date + ' @ ' + time[0] + ':' + time[1]
+    }
+
+    const setWaypointsFn = (localWaypoints) => {
+        localWaypoints.forEach(function(part, index) {
+            this[index] = {location: this[index], stopover: false}
+          }, localWaypoints);
+        setWaypoints(localWaypoints);
+    }
+
+    // To convert location coordinates into names
+    const getLocFromCoords = (coords, type) => {
+        let lat = coords['lat']
+        let long = coords['lng']
+
+        Geocode.fromLatLng(lat, long).then(
+            (res) => {
+                const location = res.results[0].formatted_address;
+                if (type === 'src') {
+                    setsource(location)
+                }
+                else {
+                    setdestination(location)
+                }
+            },
+            (err) => {
+                console.error(err);
+                if (type === 'src') {
+                    setsource(lat + ',' + long)
+                }
+                else {
+                    setdestination(lat + ',' + long)
+                }
+            }
+        );
+    }
+
+    const [isDriver, setIsDriver] = useState(false);
+
+    // Enable 'Done' button only in driver mode 
+    useEffect(() => {
+        fetch(process.env.REACT_APP_END_POINT + '/trip/isdriver', {
+            method: 'GET',
+            headers: {
+                'Content-Type': 'application/json',
+                'Coookie': Cookies.get('tokken')
+            }
+        }).then((response) => {
+            if (response.ok) {
+                return response.json();
+            }
+        }).then((responseJson) => {
+            if (responseJson.isdriver) {
+                setIsDriver(true)
+            }
+        }).catch((error) => {
+            alert(error);
+        });
+    }, []);
+
+    // Handle 'Cancel' button
+    const handleCancel = (e) => {
+        e.preventDefault();
+
+        return fetch(process.env.REACT_APP_END_POINT + '/trip', {
+            method: 'DELETE',
+            headers: {
+                'Content-Type': 'application/json',
+                'Coookie': Cookies.get('tokken')
+            },
+        }).then((response) => {
+            if (response.ok) {
+                setActiveTrip(null);
+                alert("Trip cancelled successfully");
+                window.location.reload();
+                return;
+            }
+            throw new Error(response.statusText);
+        }).catch((error) => {
+            console.log(error);
+            alert(error);
+        });
+    }
+
+    // Handle 'Done' button
+    const handleDone = (e) => {
+        e.preventDefault();
+
+        return fetch(process.env.REACT_APP_END_POINT + '/trip/done', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Coookie': Cookies.get('tokken')
+            },
+        }).then((response) => {
+            console.log(response)
+            if (response.ok) {
+                setActiveTrip(null);
+                alert("Trip marked completed");
+                window.location.reload();
+                return;
+            }
+            throw new Error(response.statusText);
+        }).catch((error) => {
+            console.log(error);
+            alert(error);
+        });
+    }
+
+    // Active Trip details
+    const [source, setsource] = useState("")
+    const [destination, setdestination] = useState("")
+    const [datetime, setdatetime] = useState("")
+    const [driver, setdriver] = useState("")
+    const [riders, setriders] = useState("")
+
+    useEffect(() => {
+        fetch(process.env.REACT_APP_END_POINT + '/trip/activetrip', {
+            method: 'GET',
+            headers: {
+                'Content-Type': 'application/json',
+                'Coookie': Cookies.get('tokken')
+            }
+        }).then((response) => {
+            if (response.ok) {
+                return response.json();
+            }
+        }).then((responseJson) => {
+            console.log(responseJson)
+            setWaypointsFn(responseJson.waypoints)
+            setdatetime(getDateandTime(responseJson.dateTime))
+            setdriver(responseJson.driver)
+            getLocFromCoords(responseJson.source, 'src')
+            getLocFromCoords(responseJson.destination, 'dest')
+            let all_riders = responseJson.riders
+            var temp_riders = ""
+            for (let i = 0; i < all_riders.length - 1; i++) {
+                temp_riders += all_riders[i] + ', '
+            }
+            temp_riders += all_riders[all_riders.length - 1]
+            if (temp_riders === "") {
+                temp_riders = "No rider currently"
+            }
+            setriders(temp_riders)
+
+            // Set Map Coords
+            mapCoords['src'] = responseJson.source
+            mapCoords['dst'] = responseJson.destination
+            setMapCoords(mapCoords)
+            console.log(mapCoords)
+
+        }).catch((error) => {
+            alert(error);
+        });
+    }, []);
+
+    return (
+        <>
+            {/* <h1 id="pageTitle">Active Trip</h1> */}
+            <GoogleMap
+                mapContainerStyle={mapContainerStyle}
+                zoom={15}
+                center={center}
+                options={options}
+                onLoad={onMapLoad}>
+                {
+                    (routeResp == null && mapCoords['src'] != null && mapCoords['dst'] != null) && (
+                        <DirectionsService
+                            // required
+                            options={{
+                                destination: mapCoords['dst'],
+                                origin: mapCoords['src'],
+                                travelMode: 'DRIVING',
+                                waypoints: waypoints,
+                                optimizeWaypoints: true,
+                            }}
+                            callback={directionsCallback}
+                        />
+                    )
+                }
+                {
+                    routeResp !== null && (
+                        <DirectionsRenderer
+                            options={{
+                                directions: routeResp
+                            }}
+                        />
+                    )
+                }
+            </GoogleMap>
+            <Container id="activeTripContainer" fluid="lg">
+                <Row style={{ marginTop: '1rem' }}>
+                    <Col md="10">
+                        <h1>Active Trip Details</h1>
+                        <Row>
+                            <h3 style={{ marginTop: '1rem' }}><span className='trip-attributes'>Source</span>: {source}</h3>
+                            <h3><span className='trip-attributes'>Destination</span>: {destination}</h3>
+                            <h3><span className='trip-attributes'>Date</span>: {datetime}</h3>
+                            <h3 style={{ marginTop: '1rem' }}><span className='trip-attributes'>Driver</span>: {driver}</h3>
+                            <h3><span className='trip-attributes'>Rider(s)</span>: {riders}</h3>
+                        </Row>
+                    </Col>
+                    <Col md="2">
+                        <Row>
+                            {isDriver ? <Button variant='primary' id='doneTripButton' onClick={handleDone}> Done </Button> : null}
+                            <Button variant='danger' id='cancelTripButton' onClick={handleCancel}> Cancel trip </Button>
+                        </Row>
+                    </Col>
+                </Row>
+            </Container>
+        </>
+    )
+}
+
+[FILE_END]frontend/src/components/activetrip/ActiveTrip.js
+
+[DIR_END]frontend/src/components/activetrip
+
+[DIR_START]frontend/src/components/auth
+[FILE_START]frontend/src/components/auth/Login.css
+.login-container {
+    padding: 60px 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    /* background-color: #0d6efd; */
+}
+
+.login-content{
+    background-color: white;
+    width: 33%;
+    padding: 30px;
+    border-radius: 5px
+}
+
+.heading-text{
+    text-align: center;
+    font-weight: bold;
+}
+
+.form-group{
+    margin-bottom: 10px;
+}
+
+.login-button{
+    margin-top: 15px;
+    width: 100%;
+}
+
+.signup-link{
+    text-align: center;
+    margin-top: 2rem;
+    display: block;
+}
+[FILE_END]frontend/src/components/auth/Login.css
+
+[FILE_START]frontend/src/components/auth/Login.js
+import React, { useState } from "react";
+import Form from "react-bootstrap/Form";
+import Button from "react-bootstrap/Button";
+import './Login.css';
+import { Link } from "react-router-dom";
+
+export default function Login({ setToken, setActiveTrip }) {
+
+    const [email, setEmail] = useState("");
+    const [password, setPassword] = useState("");
+
+    function loginUser(credentials) {
+        return fetch(process.env.REACT_APP_END_POINT + '/signin', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(credentials)
+        })
+            .then((response) => {
+                console.log(response);
+                if (response.ok) {
+                    return response.json();
+                }
+                throw new Error(response.statusText);
+            })
+            .then((responseJson) => {
+                return responseJson;
+            })
+            .catch((error) => {
+                alert(error);
+            });
+    }
+
+    const handleSubmit = async e => {
+        e.preventDefault();
+        const data = {
+            email,
+            password
+        }
+        const sessionUserDetails = await loginUser(data);
+        if (sessionUserDetails) {
+            if (sessionUserDetails.user.active_trip)
+                setActiveTrip(sessionUserDetails.user.active_trip);
+            if (sessionUserDetails.token)
+                setToken({ token: sessionUserDetails.token, name: sessionUserDetails.user.name });
+            window.location.reload();
+        }
+    }
+
+    function validateForm() {
+        return email.length > 0 && password.length > 0;
+    }
+
+    return (
+        <div className="login-container">
+            <div className="login-content">
+                <Form onSubmit={handleSubmit} data-test="login-form">
+                    <h3 className="heading-text">Login</h3>
+                    <Form.Group size="lg" controlId="email" className="form-group">
+                        <Form.Label>Email</Form.Label>
+                        <Form.Control
+                            data-test="email-form-control"
+                            autoFocus
+                            type="email"
+                            value={email}
+                            onChange={(e) => setEmail(e.target.value)}
+                        />
+                    </Form.Group>
+                    <Form.Group size="lg" controlId="password" className="form-group">
+                        <Form.Label>Password</Form.Label>
+                        <Form.Control
+                            data-test="password-form-control"
+                            type="password"
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                        />
+                    </Form.Group>
+                    <Button data-test="login-button" size="lg" type="submit" disabled={!validateForm()} className="login-button">
+                        Login
+                    </Button>
+                </Form>
+                <Link to='/signup' className="signup-link">SignUp</Link>
+            </div>
+        </div>
+    );
+}
+
+// Login.propTypes = {
+//     setToken: PropTypes.func.isRequired
+//   };
+
+[FILE_END]frontend/src/components/auth/Login.js
+
+[FILE_START]frontend/src/components/auth/SignUp.css
+.signup-container {
+    padding: 60px 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    /* background-color: #0d6efd; */
+}
+
+.signup-content{
+    background-color: white;
+    width: 33%;
+    padding: 30px;
+    border-radius: 5px
+}
+
+.heading-text{
+    text-align: center;
+    font-weight: bold;
+}
+
+.signup-button{
+    margin-top: 25px;
+    width: 100%;
+}
+
+.signup-button:hover{
+    cursor: pointer; 
+}
+
+.login-link{
+    text-align: center;
+    margin-top: 2rem;
+    display: block;
+}
+[FILE_END]frontend/src/components/auth/SignUp.css
+
+[FILE_START]frontend/src/components/auth/SignUp.js
+import React, { useState } from "react";
+import Form from "react-bootstrap/Form";
+import Button from "react-bootstrap/Button";
+import './SignUp.css';
+import { Link } from "react-router-dom";
+
+export default function SignUp({ setToken }) {
+
+  const [name, setName] = useState("");
+  const [lastname, setLastname] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmpassword, setconfirmPassword] = useState("");
+
+  function signupUser(userDetails) {
+    return fetch(process.env.REACT_APP_END_POINT + '/signup', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(userDetails)
+    })
+      .then((response) => {
+        console.log(response);
+        if (response.ok) {
+          return response.json();
+        }
+        throw new Error(response.statusText);
+      })
+      .then((responseJson) => {
+        return responseJson;
+      })
+      .catch((error) => {
+        alert(error);
+      });
+  }
+  const handleSubmit = async e => {
+    e.preventDefault();
+    const data = {
+      name,
+      lastname,
+      email,
+      password,
+      confirmpassword
+    }
+    const sessionUserDetails = await signupUser(data);
+    if (sessionUserDetails && sessionUserDetails.token) {
+      setToken({ token: sessionUserDetails.token, name: sessionUserDetails.user.name });
+      window.location.reload();
+    }
+  }
+
+  function validateForm() {
+    return email.length > 0 && password.length > 0 &&
+      name.length > 0 && lastname.length > 0 &&
+      password === confirmpassword
+  }
+
+  return (
+    <div className="signup-container">
+      <div className="signup-content">
+        <Form onSubmit={handleSubmit}>
+          <h3 className="heading-text">Sign Up</h3>
+
+          <Form.Group size="lg" controlId="name">
+            <Form.Label>First Name</Form.Label>
+            <Form.Control
+              autoFocus
+              data-test="first-name-form-control"
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+          </Form.Group>
+
+          <Form.Group size="lg" controlId="lastname">
+            <Form.Label>Last Name</Form.Label>
+            <Form.Control
+              autoFocus
+              data-test="last-name-form-control"
+              type="text"
+              value={lastname}
+              onChange={(e) => setLastname(e.target.value)}
+            />
+          </Form.Group>
+
+          <Form.Group size="lg" controlId="email">
+            <Form.Label>Email</Form.Label>
+            <Form.Control
+              autoFocus
+              data-test="email-form-control"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+          </Form.Group>
+          <Form.Group size="lg" controlId="password">
+            <Form.Label>Password</Form.Label>
+            <Form.Control
+              data-test="password-form-control"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+          </Form.Group>
+
+          <Form.Group size="lg" controlId="confirmpassword">
+            <Form.Label>Confirm Password </Form.Label>
+            <Form.Control
+              autoFocus
+              data-test="conf-password-form-control"
+              type="password"
+              value={confirmpassword}
+              onChange={(e) => setconfirmPassword(e.target.value)}
+            />
+          </Form.Group>
+          <Button size="lg" type="submit" disabled={!validateForm()} className="signup-button" data-test="signup-button">
+            Sign Up
+          </Button>
+        </Form>
+        <Link to='/login' className="login-link">Login</Link>
+      </div>
+    </div>
+  );
+  // Login.propTypes = {
+  //     setToken: PropTypes.func.isRequired
+  //   };
+
+}
+
+[FILE_END]frontend/src/components/auth/SignUp.js
+
+[DIR_START]frontend/src/components/auth/__test__
+[FILE_START]frontend/src/components/auth/__test__/Login.test.js
+import { shallow } from "enzyme";
+import React from "react";
+import Login from "../Login";
+
+// global.fetch = jest.fn(() =>
+//   Promise.resolve({
+//     json: () => Promise.resolve({ token: 'tokken' }),
+//   })
+// );
+
+//or try
+// window.fetch = jest.fn().mockImplementation(() => {
+//     return new Promise((resolve, reject) => {
+//         resolve({
+//             status: 200,
+//             ok: true,
+//             json: () => new Promise((resolve, reject) => {
+//                 resolve({
+//                     'players': [
+//                         { 'firstname': 'Robbie', 'lastname': 'Keane' },
+//                         { 'firstname': 'Alan', 'lastname': 'Shearer' }
+//                     ]
+//                 });
+//             })
+//         });
+//     });
+// });
+
+describe("login", () => {
+  const setToken = jest.fn();
+  let wrapper;
+  // const setState = jest.fn();
+  // const useStateSpy = jest.spyOn(React, "useState");
+  // useStateSpy.mockImplementation((init) => [init, setState]);
+
+  beforeEach(() => {
+    wrapper = shallow(<Login setToken={setToken} />);
+  });
+
+  it("Should render login button", () => {
+    const loginButton = wrapper.find(`[data-test='login-button']`);
+    expect(loginButton.length).toBe(1);
+  });
+
+  it("Should log-in", () => {
+    global.fetch = jest.fn(() =>
+      Promise.resolve({
+        json: () => Promise.resolve({ token: 'tokken' }),
+      })
+    );
+    wrapper.find(`[data-test='email-form-control']`).simulate("change", { target: { value: "foo@bar.com" } });
+    wrapper.find(`[data-test='password-form-control']`).simulate("change", { target: { value: "foobar" } });
+    wrapper.find(`[data-test='login-button']`).simulate('click');
+  });
+
+  afterEach(() => {
+    // fetch.mockClear();
+    jest.clearAllMocks();
+  });
+})
+
+[FILE_END]frontend/src/components/auth/__test__/Login.test.js
+
+[FILE_START]frontend/src/components/auth/__test__/SignUp.test.js
+import Enzyme, { shallow } from "enzyme";
+import React from "react";
+import SignUp from "../SignUp";
+
+global.fetch = jest.fn(() =>
+    Promise.resolve({
+        json: () => Promise.resolve({ token: 'token' }),
+    })
+);
+
+describe("signup", () => {
+    const setToken = jest.fn();
+    const handleSubmit = jest.fn();
+    let wrapper;
+    // const setState = jest.fn();
+    // const useStateSpy = jest.spyOn(React, "useState");
+    // useStateSpy.mockImplementation((init) => [init, setState]);
+
+    beforeEach(() => {
+        // fetch.mockClear();
+        wrapper = shallow(<SignUp setToken={setToken} />);
+    });
+
+    it("Should render Signup button", () => {
+        const signUpButton = wrapper.find(`[data-test='signup-button']`);
+        expect(signUpButton.length).toBe(1);
+    });
+
+    it("Should sign-up", () => {
+        wrapper.find(`[data-test='first-name-form-control']`).simulate("change", { target: { value: "foofoo" } });
+        wrapper.find(`[data-test='last-name-form-control']`).simulate("change", { target: { value: "barbar" } });
+        wrapper.find(`[data-test='email-form-control']`).simulate("change", { target: { value: "foo@bar.com" } });
+        wrapper.find(`[data-test='password-form-control']`).simulate("change", { target: { value: "foobar" } });
+        wrapper.find(`[data-test='conf-password-form-control']`).simulate("change", { target: { value: "foobar" } });
+        wrapper.find(`[data-test='signup-button']`).simulate('click');
+        //TODO: cover the handle signup function by stubbing it
+    });
+
+    afterEach(() => {
+        jest.clearAllMocks();
+    });
+})
+
+[FILE_END]frontend/src/components/auth/__test__/SignUp.test.js
+
+[DIR_END]frontend/src/components/auth/__test__
+
+[DIR_END]frontend/src/components/auth
+
+[DIR_START]frontend/src/components/main
+[FILE_START]frontend/src/components/main/DriveRide.css
+.pac-container {
+  background-color: #FFF;
+  z-index: 3000;
+  position: fixed;
+  display: inline-block;
+  /* float: left; */
+}
+
+.modal {
+  z-index: 2000;
+}
+
+.modal-backdrop {
+  z-index: 1000;
+}
+[FILE_END]frontend/src/components/main/DriveRide.css
+
+[FILE_START]frontend/src/components/main/DriveRide.js
+import React, { useState, useEffect, useRef } from 'react';
+import { Button, Col, Container, FloatingLabel, Form, Row } from 'react-bootstrap';
+import MapSelector from './MapSelector';
+import { DirectionsRenderer, DirectionsService, GoogleMap } from '@react-google-maps/api';
+import DatePicker from "react-datepicker";
+import './DriveRide.css';
+import "react-datepicker/dist/react-datepicker.css";
+import Cookies from 'js-cookie';
+import Geocode from "react-geocode";
+
+Geocode.setApiKey(process.env.REACT_APP_MAPS_API_KEY);
+
+const mapContainerStyle = {
+    height: "60vh",
+    width: "100%",
+};
+const options = {
+    disableDefaultUI: true,
+    zoomControl: true,
+};
+const center = {
+    lat: 43.473078230478336,
+    lng: -80.54225947407059,
+};
+
+export default function DriveRide({ type, setToken, setActiveTrip }) {
+    const [showModal, setShowModal] = useState(false);
+    const [modalTitle, setModalTitle] = useState('Title Error');
+    const [mapType, setMapType] = useState();
+    const [mapCoords, setMapCoords] = useState({
+        src: null,
+        dst: null
+    });
+    const [routeResp, setRouteResp] = useState();
+    const [dateTime, setDateTime] = useState(new Date(new Date().getTime() + (60 * 60 * 1000)));
+    const [riders, setRiders] = useState();
+
+    const [srcName, setsrcName] = useState("")
+    const [destName, setdestName] = useState("")
+
+    const mapRef = useRef();
+    const onMapLoad = (map) => {
+        mapRef.current = map;
+    };
+
+    const openMapModal = (mapType) => {
+        setMapType(mapType);
+        setModalTitle(mapType === 'src' ? 'Source point' : 'Destination point');
+        setShowModal(true);
+    }
+
+    const getLocFromCoords = (coords, type) =>{
+        let lat = coords['lat']
+        let long =  coords['lng']
+    
+        Geocode.fromLatLng(lat, long).then(
+            (res) => {
+                const location = res.results[0].formatted_address;
+                if(type === 'src'){
+                    setsrcName(location)
+                }
+                else{
+                    setdestName(location)
+                }
+            },
+            (err) => {
+                console.error(err);
+                if(type === 'src'){
+                    setsrcName(lat+','+long)
+                }
+                else{
+                    setdestName(lat+','+long)
+                }
+            }
+        );
+    }
+
+    const handleCallback = (closeButtonClicked, mapType, mapData) => {
+        setShowModal(false);
+        if (closeButtonClicked) return;
+
+        setMapCoords({
+            ...mapCoords,
+            [mapType]: mapData
+        })
+        getLocFromCoords(mapData, mapType);
+    }
+
+    const directionsCallback = (response) => {
+        if (response !== null) {
+            if (response.status === 'OK')
+                setRouteResp(response)
+            else
+                alert('Problem fetching directions')
+        } else alert('Problem fetching directions')
+    }
+
+    const handleDriveSubmit = (event) => {
+        event.preventDefault();
+        const data = {
+            src: {
+                lat: mapCoords.src.lat,
+                lng: mapCoords.src.lng
+            },
+            dst: {
+                lat: mapCoords.dst.lat,
+                lng: mapCoords.dst.lng
+            },
+            route: routeResp.routes[0].overview_path,
+            dateTime: dateTime,
+            max_riders: riders
+        }
+        console.log(data);
+        return fetch(process.env.REACT_APP_END_POINT + '/trip/drive', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                // 'Authorization': 'Bearer ' + Cookies.get('tokken'),  //another working solution
+                'Coookie': Cookies.get('tokken')
+            },
+            body: JSON.stringify(data)
+        })
+            .then((response) => {
+                if (response.ok)
+                    return response.json();
+                else if (response.status===401)
+                    setToken(null);
+                throw new Error(response.statusText);
+            })
+            .then((responseJson) => {
+                console.log(responseJson);
+                setActiveTrip(responseJson._id);
+                window.location.reload();
+            })
+            .catch((error) => {
+                console.log(error);
+                alert(error);
+                window.location.reload();
+            });
+    }
+
+    const handleRideSubmit = (event) => {
+        event.preventDefault();
+        const data = {
+            src: {
+                lat: mapCoords.src.lat,
+                lng: mapCoords.src.lng
+            },
+            dst: {
+                lat: mapCoords.dst.lat,
+                lng: mapCoords.dst.lng
+            },
+            dateTime: dateTime,
+        }
+        console.log(data);
+        return fetch(process.env.REACT_APP_END_POINT + '/trip/ride', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                // 'Authorization': 'Bearer ' + Cookies.get('tokken'),  //another working solution
+                'Coookie': Cookies.get('tokken')
+            },
+            body: JSON.stringify(data)
+        })
+            .then((response) => {
+                if (response.ok)
+                    return response.json();
+                else if (response.status===401)
+                    setToken(null);
+                throw new Error(response.statusText);
+            })
+            .then((responseJson) => {
+                console.log(responseJson);
+                setActiveTrip(responseJson._id);
+                window.location.reload();
+            })
+            .catch((error) => {
+                console.log(error);
+                alert(error);
+                window.location.reload();
+            });
+    }
+
+    useEffect(() => {
+        setRouteResp(null);
+    }, [mapCoords]);
+
+    return (
+        <>
+            {/* <div style={{ width: '100%', height: '100%', textAlign: 'center' }}> */}
+            <Container fluid="lg">
+                <Row style={{ marginTop: '3rem' }}>
+                    <Col md>
+                        <Form>
+                            <Form.Group as={Row} className="mb-3" controlId="src">
+                                <Col xs="9">
+                                    <Form.Control readOnly defaultValue="Source not selected" value={mapCoords['src'] ? srcName : null} />
+                                </Col>
+                                <Col xs="3">
+                                    <Button variant="primary" onClick={() => openMapModal('src')} style={{ width: '100%' }} data-test="source-button">
+                                        Source
+                                    </Button>
+                                </Col>
+                            </Form.Group>
+                            <Form.Group as={Row} className="mb-3" controlId="dst">
+                                <Col xs="9">
+                                    <Form.Control readOnly defaultValue="Destination not selected" value={mapCoords['dst'] ? destName : null} />
+                                </Col>
+                                <Col xs="3">
+                                    <Button variant="primary" onClick={() => openMapModal('dst')} style={{ width: '100%' }} data-test="destination-button">
+                                        Destination
+                                    </Button>
+                                </Col>
+                            </Form.Group>
+                            <Row style={{ marginTop: '1rem' }}>
+                                <Col xs="6" sm="3" md="4">
+                                    <label>Date-Time of trip: </label>
+                                </Col>
+                                <Col xs="6">
+                                    <DatePicker
+                                        showTimeSelect
+                                        selected={dateTime}
+                                        minDate={new Date()}
+                                        closeOnScroll={true}
+                                        onChange={(date) => setDateTime(date)}
+                                        dateFormat="MMMM d @ h:mm aa" />
+                                </Col>
+                            </Row>
+                            {
+                                type === 'drive' ?
+                                    <Row style={{ marginTop: '1rem' }}>
+                                        <Col sm="7" md="12" xl="8">
+                                            <FloatingLabel controlId="ridingWith" label="Select number of people can ride with">
+                                                <Form.Select onChange={e => { setRiders(e.target.value) }}>
+                                                    <option>----- Select -----</option>
+                                                    <option value="1">One</option>
+                                                    <option value="2">Two</option>
+                                                    <option value="3">Three</option>
+                                                </Form.Select>
+                                            </FloatingLabel>
+                                        </Col>
+                                    </Row>
+                                    : null
+                            }
+                            <Row className='justify-content-center'>
+                                <Col className='col-auto'>
+                                    {
+                                        type === 'drive' ?
+                                            <Button variant="primary" type="submit" data-test="drive-submit-button" style={{ marginTop: '3rem' }} onClick={handleDriveSubmit}>
+                                                Ready to drive!
+                                            </Button> :
+                                            <Button variant="primary" type="submit" data-test="ride-submit-button" style={{ marginTop: '3rem' }} onClick={handleRideSubmit}>
+                                                Ready to ride!
+                                            </Button>
+                                    }
+                                </Col>
+                            </Row>
+                        </Form>
+                    </Col>
+                    <Col md style={{ marginTop: '2rem' }}>
+                        <GoogleMap
+                            mapContainerStyle={mapContainerStyle}
+                            zoom={15}
+                            center={center}
+                            options={options}
+                            onLoad={onMapLoad}
+                        >
+                            {
+                                (routeResp == null &&
+                                    mapCoords['src'] != null && mapCoords['dst'] != null) && (
+                                    <DirectionsService
+                                        // required
+                                        options={{
+                                            destination: mapCoords['dst'],
+                                            origin: mapCoords['src'],
+                                            travelMode: 'DRIVING',
+                                            drivingOptions: {
+                                                departureTime: dateTime
+                                            }
+                                        }}
+                                        // required
+                                        callback={directionsCallback}
+                                    />
+                                )
+                            }
+
+                            {
+                                routeResp !== null && (
+                                    <DirectionsRenderer
+                                        // required
+                                        options={{
+                                            directions: routeResp
+                                        }}
+                                    />
+                                )
+                            }
+                        </GoogleMap>
+                    </Col>
+                </Row>
+            </Container>
+            <MapSelector
+                showModal={showModal}
+                mapType={mapType}
+                modalTitle={modalTitle}
+                mapCoords={mapCoords}
+                handleCallback={handleCallback}
+            />
+        </>
+    );
+}
+[FILE_END]frontend/src/components/main/DriveRide.js
+
+[FILE_START]frontend/src/components/main/MapSelector.js
+import React, { useRef, useState } from 'react';
+import { GoogleMap, Autocomplete, Marker } from '@react-google-maps/api';
+import { Button, Modal } from 'react-bootstrap';
+
+const mapContainerStyle = {
+  height: "70vh",
+  width: "100%",
+};
+const options = {
+  // styles: mapStyles,
+  disableDefaultUI: true,
+  zoomControl: true,
+};
+const center = {
+  lat: 43.473078230478336,
+  lng: -80.54225947407059,
+};
+
+const autocompleteTextBoxStyle = {
+  boxSizing: `border-box`,
+  border: `1px solid transparent`,
+  width: `22rem`,
+  height: `3rem`,
+  padding: `0 12px`,
+  borderRadius: `3px`,
+  boxShadow: `0 2px 6px rgba(0, 0, 0, 0.3)`,
+  fontSize: `14px`,
+  outline: `none`,
+  textOverflow: `ellipses`,
+  position: 'absolute',
+  top: '1rem',
+  left: '1.5rem',
+  maxWidth: '100%'
+}
+
+export default function MapSelector(props) {
+  const [marker, setMarker] = useState(center);
+  const [autocomplete, setAutocomplete] = useState(null);
+  const [textBoxText, setTextBoxText] = useState('');
+
+  const handleClose = () => {
+    props.handleCallback(true);
+    return null;
+  }
+
+  const onMapClick = (e) => {
+    const coords = {
+      lat: e.latLng.lat(),
+      lng: e.latLng.lng()
+    }
+    setTextBoxText('');
+    setMarker(coords);
+  };
+
+  const mapSelectorRef = useRef();
+  const onMapSelectorLoad = (mapSelector) => {
+    setTextBoxText('');
+    setMarker(props.mapCoords[props.mapType] == null ? center : props.mapCoords[props.mapType]);
+    mapSelectorRef.current = mapSelector;
+  };
+
+  const panTo = ({ lat, lng }) => {
+    mapSelectorRef.current.panTo({ lat, lng });
+    mapSelectorRef.current.setZoom(14);
+  };
+
+  const onAutoCompleteLoad = (autocomplete) => {
+    setAutocomplete(autocomplete);
+  };
+  const onPlaceChanged = () => {
+    setTextBoxText(autocomplete.getPlace().formatted_address);
+    const coord = {
+      lat: autocomplete.getPlace().geometry.location.lat(),
+      lng: autocomplete.getPlace().geometry.location.lng()
+    };
+    setMarker(coord);
+    panTo(coord);
+  };
+
+  return (
+    <Modal
+      onHide={handleClose}
+      size='xl'
+      show={props.showModal}
+    >
+      <Modal.Header closeButton>
+        <Modal.Title>{props.modalTitle}</Modal.Title>
+      </Modal.Header>
+      <Modal.Body data-test="model-body">
+        <GoogleMap
+          mapContainerStyle={mapContainerStyle}
+          zoom={15}
+          center={marker}
+          options={options}
+          onClick={onMapClick}
+          onLoad={onMapSelectorLoad}
+        >
+          <Autocomplete
+            onLoad={onAutoCompleteLoad}
+            onPlaceChanged={onPlaceChanged}
+            restrictions={{ country: ['ca', 'us'] }}
+          >
+            <input
+              type="text"
+              placeholder="Search"
+              data-test="map-search"
+              value={textBoxText}
+              style={autocompleteTextBoxStyle}
+              onChange={e => setTextBoxText(e.target.value)}
+            />
+          </Autocomplete>
+          <Marker
+            key={`${marker.lat}-${marker.lng}`}
+            position={{ lat: marker.lat, lng: marker.lng }}
+          />
+        </GoogleMap>
+      </Modal.Body>
+      <Modal.Footer>
+        <Button variant="secondary" data-test="close-button" onClick={handleClose}>Close</Button>
+        <Button variant="primary" data-test="map-select" onClick={() => props.handleCallback(false, props.mapType, marker)}>Select</Button>
+      </Modal.Footer>
+    </Modal>
+  )
+}
+[FILE_END]frontend/src/components/main/MapSelector.js
+
+[DIR_START]frontend/src/components/main/__test__
+[FILE_START]frontend/src/components/main/__test__/DriveRide.test.js
+import Enzyme, { shallow } from "enzyme";
+import React from "react";
+import Adapter from 'enzyme-adapter-react-16';
+import Cookies from 'js-cookie';
+import DriveRide from "../DriveRide";
+
+Enzyme.configure({ adapter: new Adapter() })
+
+describe("drive", () => {
+
+    let wrapper;
+
+    beforeEach(() => {
+        Cookies.get = jest.fn().mockImplementation(() => 'tokken');
+        wrapper = shallow(<DriveRide type={'drive'} />);
+    });
+
+    it("Should render source button", () => {
+        const sourceButton= wrapper.find(`[data-test='source-button']`);
+        expect(sourceButton.length).toBe(1);
+     });
+
+     it("Should render destination button", () => {
+        const destinationButton= wrapper.find(`[data-test='destination-button']`);
+        expect(destinationButton.length).toBe(1);
+     });
+
+     it("Should render drive button", () => {
+        const driveButton= wrapper.find(`[data-test='drive-submit-button']`);
+        expect(driveButton.length).toBe(1);
+     });
+
+    afterEach(() => {
+        jest.clearAllMocks();
+    });
+})
+
+[FILE_END]frontend/src/components/main/__test__/DriveRide.test.js
+
+[FILE_START]frontend/src/components/main/__test__/MapSelector.test.js
+import Enzyme, { shallow } from "enzyme";
+import React from "react";
+import Adapter from 'enzyme-adapter-react-16';
+import Cookies from 'js-cookie';
+import MapSelector from "../MapSelector";
+
+Enzyme.configure({ adapter: new Adapter() })
+
+describe("map-selector", () => {
+
+    let wrapper;
+
+    beforeEach(() => {
+        Cookies.get = jest.fn().mockImplementation(() => 'tokken');
+        wrapper = shallow(<MapSelector />);
+    });
+
+    it("Should render source button", () => {
+        const sourceButton= wrapper.find(`[data-test='close-button']`);
+        expect(sourceButton.length).toBe(1);
+     });
+
+    afterEach(() => {
+        jest.clearAllMocks();
+    });
+})
+
+[FILE_END]frontend/src/components/main/__test__/MapSelector.test.js
+
+[DIR_END]frontend/src/components/main/__test__
+
+[DIR_END]frontend/src/components/main
+
+[DIR_START]frontend/src/components/misc
+[FILE_START]frontend/src/components/misc/NotFound.js
+import React from 'react';
+import { Link } from 'react-router-dom';
+
+export default function NotFound() {
+    return (
+        <>
+            <div style={{ width: '100%', height: '100%', textAlign: 'center' }}>
+                <br/><br/><br/><br/>
+                <h1>404 - Not Found!</h1><br/>
+                <Link to="/">Go Home</Link>
+            </div>
+        </>
+    );
+}
+[FILE_END]frontend/src/components/misc/NotFound.js
+
+[DIR_START]frontend/src/components/misc/__test__
+[FILE_START]frontend/src/components/misc/__test__/NotFound.test.js
+import { shallow } from "enzyme";
+import React from "react";
+import NotFound from "../NotFound";
+
+describe("not-found", () => {
+
+   it("Should render", () => {
+      shallow(<NotFound />);
+   });
+})
+
+[FILE_END]frontend/src/components/misc/__test__/NotFound.test.js
+
+[DIR_END]frontend/src/components/misc/__test__
+
+[DIR_END]frontend/src/components/misc
+
+[DIR_START]frontend/src/components/navbar
+[FILE_START]frontend/src/components/navbar/Navbar.css
+.navbar {
+  background-color: #060b26;
+  height: 5rem;
+  display: flex;
+  align-items: center;
+}
+
+#hamburger {
+  margin-left: 1.25rem;
+}
+
+#logo {
+  display: flex;
+  width: fit-content;
+  align-items: center;
+  justify-content: center;
+  position: absolute;
+  right: 0;
+  left: 0;
+  margin: auto;
+  flex-direction: row;
+}
+
+.main-buttons {
+  margin-right: 1.5rem;
+}
+
+.main-button {
+  margin: 0.3rem;
+  font-weight: bold;
+}
+
+.hidden {
+  visibility: hidden;
+}
+
+#logo svg {
+  width: 2.5rem;
+  height: 2.5rem;
+}
+
+.menu-bars {
+  /* margin-left: 2rem; */
+  font-size: 2rem;
+  background: none;
+  text-decoration: none;
+  color: white;
+}
+
+.menu-bars:hover {
+  color: white;
+}
+
+.nav-menu {
+  background-color: #060b26;
+  width: 15.625rem;
+  height: 100vh;
+  display: flex;
+  justify-content: center;
+  position: fixed;
+  top: 0;
+  left: -100%;
+  transition: 850ms;
+  z-index: 10;
+  flex-direction: column;
+}
+
+.nav-menu.active {
+  left: 0;
+  transition: 350ms;
+}
+
+.nav-text {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: .5rem 0rem .5rem 0;
+  list-style: none;
+  height: 3.75rem;
+  width: 100%;
+}
+
+.nav-text a {
+  text-decoration: none;
+  color: #f5f5f5;
+  font-size: 1.125rem;
+  width: 95%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  padding: 0 2rem;
+  border-radius: .25rem;
+}
+
+.nav-text a:hover {
+  background-color: #1a83ff;
+}
+
+.sidebar-top-items {
+  width: 100%;
+  height: 100%;
+  padding: 0; 
+}
+
+.sidebar-bottom-items {
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  display: flex;
+  padding: 0;
+  margin-bottom: 2rem;
+}
+
+.navbar-toggle {
+  background-color: #060b26;
+  width: 100%;
+  height: 5rem;
+  display: flex;
+  justify-content: flex-start;
+  align-items: center;
+}
+
+#deleteProfileButton {
+  margin-top: auto;
+}
+
+[FILE_END]frontend/src/components/navbar/Navbar.css
+
+[FILE_START]frontend/src/components/navbar/Navbar.js
+import React, { useState } from 'react';
+import Cookies from 'js-cookie'
+import * as AiIcons from 'react-icons/ai';
+import * as FaIcons from 'react-icons/fa';
+import * as MdIcons from 'react-icons/md';
+import { Link, useLocation } from 'react-router-dom';
+import { IconContext } from 'react-icons';
+import { Button } from 'react-bootstrap';
+import defaultImg from '../../logo.svg';
+import './Navbar.css';
+import { SidebarData } from './SidebarData';
+
+export default function Navbar({ setToken, activeTrip, name }) {
+    const location = useLocation();
+    const [sidebar, setSidebar] = useState(false);
+    const showSidebar = () => setSidebar(!sidebar);
+
+    function logoutUser() {
+        return fetch(process.env.REACT_APP_END_POINT + '/signout', {
+            method: 'GET',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + Cookies.get('tokken')
+            },
+            // body: JSON.stringify(credentials)
+            // }).then(data => data.json());
+        }).then(setToken(null));
+    }
+
+    const handleLogOut = async e => {
+        e.preventDefault();
+        const data = await logoutUser();
+        console.log(data);
+        window.location.reload();
+    }
+
+    function deleteUser() {
+        return fetch(process.env.REACT_APP_END_POINT + '/delete', {
+            method: 'DELETE',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + Cookies.get('tokken')
+            }
+        }).then((res) => {
+            console.log(res)
+            setToken(null)
+        })
+    }
+    
+    const handleDeleteProfile = async e => {
+        e.preventDefault();
+        const data = await deleteUser();
+        console.log(data);
+        window.location.reload();
+    }
+
+    return (
+        <>
+            <IconContext.Provider value={{ color: '#fff' }}>
+                {/* Primary Navbar */}
+                <div className='navbar'>
+                    {Cookies.get('tokken') ?
+                        <Link to='#' className={'menu-bars'} id="hamburger">
+                            <FaIcons.FaBars onClick={showSidebar} />
+                        </Link> : null}
+
+                    <div id='logo' data-test="shareMyGaddi-logo">
+                        <AiIcons.AiFillCar />
+                        <Link to='/' className='menu-bars nav-text'>
+                            ShareMyGaddi
+                        </Link>
+                    </div>
+
+                    {Cookies.get('tokken') ?
+                        <div className={'main-buttons'}>
+                            {/* <div id='main-buttons'> */}
+                            <Link to='/active-trip'>
+                                <Button variant='warning' className={activeTrip ? 'main-button' : 'hidden'} disabled={'/active-trip' === location.pathname} data-test="activeTrip-button">
+                                    <AiIcons.AiOutlineCar style={{ color: 'black', marginBottom: '0.1rem', marginRight: '0.3rem' }} data-test='activeTrip-icon' /> Active Trip
+                                </Button>
+                            </Link>
+                            <Link to='/drive'>
+                                <Button variant='warning' className={activeTrip ? 'hidden' : 'main-button'} disabled={'/drive' === location.pathname} data-test="drive-button">
+                                    <AiIcons.AiTwotoneCar style={{ color: 'black', marginBottom: '0.1rem', marginRight: '0.3rem' }} data-test='drive-icon' /> Drive
+                                </Button>
+                            </Link>
+                            <Link to='/ride'>
+                                <Button variant='warning' className={activeTrip ? 'hidden' : 'main-button'} disabled={'/ride' === location.pathname} data-test="ride-button">
+                                    <MdIcons.MdPeopleOutline style={{ color: 'black', marginRight: '0.3rem' }} data-test='ride-icon' /> Ride
+                                </Button>
+                            </Link>
+                        </div> : null}
+                </div>
+                {/* Primary Navbar end*/}
+
+                {/* Sidebar*/}
+                {Cookies.get('tokken') ?
+                    <nav className={sidebar ? 'nav-menu active' : 'nav-menu'}>
+                        <ul className='sidebar-top-items' onClick={showSidebar}>
+                            <li className='navbar-toggle' style={{ paddingLeft: '1rem' }}>
+                                <Link to='#' className='menu-bars'>
+                                    <AiIcons.AiOutlineClose />
+                                </Link>
+                            </li>
+                            <li>
+                                {/* <img src={props.user.img} alt={props.user.name} /> */}
+                                <img src={defaultImg} alt='Name' data-test="name-image" />
+                            </li>
+                            <li style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
+                                <div style={{ color: 'white' }}>{name}</div>
+                            </li>
+                            {SidebarData.map((item, index) => {
+                                if ((activeTrip && item.title !== 'Drive' && item.title !== 'Ride') || (!activeTrip && item.title !== 'Active Trip'))
+                                    return (
+                                        <li key={index} className='nav-text'>
+                                            <Link to={item.path}>
+                                                {item.icon}
+                                                <span style={{ marginLeft: '1rem' }}>{item.title}</span>
+                                            </Link>
+                                        </li>
+                                    );
+                            })}
+                        </ul>
+                        <ul className='sidebar-bottom-items' onClick={showSidebar}>
+                            <li className='nav-text' data-test="logout-button">
+                                <Link to='/' onClick={handleLogOut} > {/*call logout method*/}
+                                    <FaIcons.FaSignOutAlt />
+                                    <span style={{ marginLeft: '1rem' }}>Logout</span>
+                                </Link>
+                            </li>
+                            <Button id="deleteProfileButton" variant="danger" data-test="delete-button" onClick={handleDeleteProfile}>Delete Profile</Button>
+                        </ul>
+                    </nav> : null}
+                {/* Sidebar end*/}
+            </IconContext.Provider>
+        </>
+    );
+}
+[FILE_END]frontend/src/components/navbar/Navbar.js
+
+[FILE_START]frontend/src/components/navbar/SidebarData.js
+import React from 'react';
+// import * as FaIcons from 'react-icons/fa';
+import * as AiIcons from 'react-icons/ai';
+import * as BsIcons from 'react-icons/bs';
+import * as MdIcons from 'react-icons/md';
+
+export const SidebarData = [
+  {
+    title: 'Active Trip',
+    path: '/active-trip',
+    icon: <AiIcons.AiOutlineCar />,
+  },
+  {
+    title: 'Trip History',
+    path: '/trip-history',
+    icon: <BsIcons.BsCardChecklist />,
+  },
+  {
+    title: 'Drive',
+    path: '/drive',
+    icon: <AiIcons.AiTwotoneCar />,
+  },
+  {
+    title: 'Ride',
+    path: '/ride',
+    icon: <MdIcons.MdPeopleOutline />,
+  },
+];
+
+[FILE_END]frontend/src/components/navbar/SidebarData.js
+
+[DIR_START]frontend/src/components/navbar/__test__
+[FILE_START]frontend/src/components/navbar/__test__/Navbar.test.js
+import { shallow } from "enzyme";
+import React from "react";
+import Cookies from 'js-cookie';
+import Navbar from "../Navbar";
+
+
+jest.mock("react-router-dom", () => ({
+    ...jest.requireActual("react-router-dom"),
+    useLocation: () => ({
+        pathname: "localhost:3000/example/path"
+    })
+}));
+
+describe("navbar", () => {
+
+    let wrapper;
+
+    beforeEach(() => {
+        Cookies.get = jest.fn().mockImplementation(() => 'tokken');
+        wrapper = shallow(<Navbar />);
+    });
+   
+    it("render name image", () => {
+        const im= wrapper.find(`[data-test='name-image']`);
+        expect(im.length).toBe(1);
+     });
+
+     it("render ShareMyGaddi logo", () => {
+        const im= wrapper.find(`[data-test='shareMyGaddi-logo']`);
+        expect(im.length).toBe(1);
+     });
+
+     it("Should render active trip button", () => {
+        const activeTripButton= wrapper.find(`[data-test='activeTrip-button']`);
+        expect(activeTripButton.length).toBe(1);
+     });
+
+     it("Should render drive button", () => {
+        const driveButton= wrapper.find(`[data-test='drive-button']`);
+        expect(driveButton.length).toBe(1);
+     });
+
+     it("Should render ride button", () => {
+        const rideButton= wrapper.find(`[data-test='ride-button']`);
+        expect(rideButton.length).toBe(1);
+     });
+
+     it("Should render active trip icon", () => {
+        const activeTripIcon= wrapper.find(`[data-test='activeTrip-icon']`);
+        expect(activeTripIcon.length).toBe(1);
+     });
+
+     it("Should render drive icon", () => {
+        const driveIcon= wrapper.find(`[data-test='drive-icon']`);
+        expect(driveIcon.length).toBe(1);
+     });
+
+     it("Should render ride icon", () => {
+        const rideIcon= wrapper.find(`[data-test='ride-icon']`);
+        expect(rideIcon.length).toBe(1);
+     });
+
+    afterEach(() => {
+        jest.clearAllMocks();
+    });
+})
+
+[FILE_END]frontend/src/components/navbar/__test__/Navbar.test.js
+
+[DIR_END]frontend/src/components/navbar/__test__
+
+[DIR_END]frontend/src/components/navbar
+
+[DIR_START]frontend/src/components/triphistory
+[FILE_START]frontend/src/components/triphistory/TripHistory.css
+/* .tripDate{
+    float: right !important;
+} */
+
+.detail-container{
+    display: flex;
+    flex-direction: column;
+}
+
+.detail-row {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+
+    margin: .625rem 0; 
+}
+
+.detail-heading{
+    margin: 0rem .625rem;
+    font-size: 1.25rem;
+}
+/* .source{
+    text-align: start;
+    margin-right: 80%;
+} */
+
+.card-body{
+    padding: 25px;
+    background-color: rgb(250, 246, 246)
+}
+
+.trip-card{
+    margin: 20px;
+    background-color: aqua;
+}
+.groupIcon{
+    margin-right: 30px !important;
+}
+.tripImage{
+    height: 1.625rem;
+    width: 4%;
+    margin-right: 1 rem;
+}
+[FILE_END]frontend/src/components/triphistory/TripHistory.css
+
+[FILE_START]frontend/src/components/triphistory/TripHistory.js
+import { React, useEffect, useState } from 'react';
+import { Row, Col } from 'react-bootstrap'
+import * as GrIcons from 'react-icons/gr'
+import sourceImg from '../../start-location.svg';
+import destinationImg from '../../pin-location.svg';
+import dtImg from '../../date-and-time.svg';
+import groupImg from '../../group.svg';
+import './TripHistory.css';
+import Cookies from 'js-cookie';
+import Geocode from "react-geocode";
+
+export default function TripHistory() {
+    const getLocFromCoords = async (coords) => {
+        let lat = coords['lat']
+        let long = coords['lng']
+
+        const res = await Geocode.fromLatLng(lat, long)
+        const location = await res.results[0].formatted_address;
+        return location
+    }
+
+    const getDateandTime = (dtString) => {
+        const d = new Date(dtString);
+        let date = d.toDateString();
+        dtString = d.toTimeString();
+        let time = dtString.split(' ')[0].split(':')
+        return date + ' @ ' + time[0] + ':' + time[1]
+    }
+
+    const [tripDetails, setTripDetails] = useState([])
+    const fetchData = async () => {
+        const response = await fetch(process.env.REACT_APP_END_POINT + '/trip/history', {
+            method: 'GET',
+            headers: {
+                'Content-Type': 'application/json',
+                'Coookie': Cookies.get('tokken')
+            }
+        })
+        const data = await response.json()
+
+        // Parse Data
+        let tempArray = []
+        for (let i = 0; i < data.length; i++) {
+            let thisTrip = data[i]
+            let newTrip = {}
+            let loc;
+            loc = await getLocFromCoords(thisTrip["source"])
+            newTrip["source"] = loc
+            loc = await getLocFromCoords(thisTrip["destination"])
+            newTrip["destination"] = loc
+            newTrip["tripDate"] = getDateandTime(thisTrip["dateTime"])
+            newTrip["riderCount"] = thisTrip["riders"].length
+
+            tempArray.push(newTrip)
+        }
+        setTripDetails(tempArray)
+    }
+
+    useEffect(() => {
+        fetchData()
+    }, [])
+
+
+    const CardView = ({
+        source = "Default Title",
+        destination = "Default Text",
+        tripDate = "defaultDate",
+        riderCount = "defaultRider",
+
+    }) => (
+        <div className="card-body mb-4 mt-4 mx-4 text-black">
+            <div className='detail-container'>
+                <div className='detail-row'>
+                    <img className='tripImage' src={sourceImg}></img>
+                    <h6 className='detail-heading'>Source: </h6>
+                    <h6 className='detail-heading'>{source}</h6>
+                </div>
+            </div>
+
+            <div className='detail-container'>
+                <div className='detail-row'>
+                    <img className='tripImage' src={destinationImg}></img>
+                    <h6 className='detail-heading'>Destiation: </h6>
+                    <h6 className='detail-heading'>{destination}</h6>
+                </div>
+            </div>
+
+            <hr></hr>
+
+            <div className='detail-container'>
+                <div className='detail-row'>
+                    <img className='tripImage' src={dtImg}></img>
+                    <h6 className='detail-heading'>Date and time: </h6>
+                    <h6 className='detail-heading'>{tripDate}</h6>
+                </div>
+            </div>
+
+
+
+            <div className='detail-container'>
+                <div className='detail-row'>
+                    <img className='tripImage' src={groupImg}></img>
+                    <h6 className='detail-heading'>No. of riders: </h6>
+                    <h6 className='detail-heading'>{riderCount}</h6>
+                </div>
+            </div>
+        </div>
+
+    );
+    return (
+        <>
+            {tripDetails.length === 0 ? <h1 style={{ width: '100%', height: '100%', textAlign: 'center', marginTop:'30vh' }}>No trips found</h1> :
+                tripDetails.map((data, index) => {
+                    return (
+                        <CardView key={index} {...data} />
+                    )
+                })
+            }
+        </>
+    )
+}
+
+
+[FILE_END]frontend/src/components/triphistory/TripHistory.js
+
+[DIR_END]frontend/src/components/triphistory
+
+[DIR_END]frontend/src/components
+
+[FILE_START]frontend/src/index.css
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
+    monospace;
+}
+
+[FILE_END]frontend/src/index.css
+
+[FILE_START]frontend/src/index.js
+import React from 'react';
+import ReactDOM from 'react-dom';
+import './index.css';
+import App from './App';
+import reportWebVitals from './reportWebVitals';
+
+ReactDOM.render(
+  <React.StrictMode>
+      <App />
+  </React.StrictMode>,
+  document.getElementById('root')
+);
+
+// If you want to start measuring performance in your app, pass a function
+// to log results (for example: reportWebVitals(console.log))
+// or send to an analytics endpoint. Learn more: https://bit.ly/CRA-vitals
+reportWebVitals();
+
+[FILE_END]frontend/src/index.js
+
+[FILE_START]frontend/src/index.test.js
+import React from "react"
+import ReactDOM from "react-dom"
+import App from "./App"
+
+// mocks react-dom and its render method
+// so that we can assert that render is
+// called with <App /> and HTML element with id = root
+jest.mock("react-dom", () => ({ render: jest.fn() }))
+
+test("renders with App and root div", () => {
+  // Create and append to document body
+  // an HTML element with id = root
+  const root = document.createElement("div")
+  root.id = "root"
+  document.body.appendChild(root)
+
+  // Requires index.js so that react-dom render method is called
+  require("./index.js")
+})
+[FILE_END]frontend/src/index.test.js
+
+[DIR_START]frontend/src/libraries
+[FILE_START]frontend/src/libraries/GlobalState.js
+import React, { createContext, useState } from "react";
+
+const initialState = {
+  // mapsKey: process.env.REACT_APP_MAPS_API_KEY,
+  endPoint: process.env.REACT_APP_END_POINT
+}
+
+export const GlobalContext = createContext();
+
+const GlobalState = ({children}) => {
+  const [globalSate, setGlobalState] = useState(initialState);
+  return (
+    <GlobalContext.Provider value={[globalSate, setGlobalState]}>
+      {children}
+    </GlobalContext.Provider>
+  )
+}
+export default GlobalState;
+[FILE_END]frontend/src/libraries/GlobalState.js
+
+[FILE_START]frontend/src/libraries/UseActiveTrip.js
+import { useState } from 'react';
+import Cookies from 'js-cookie';
+
+export default function useActiveTrip() {
+    const getActiveTrip = () => {
+        const activeTrip = Cookies.get('activeTrip');
+        return activeTrip;
+    };
+
+    const [activeTrip, setActiveTrip] = useState(getActiveTrip());
+
+    const saveActiveTrip = data => {
+        if (data === null) {
+            Cookies.remove('activeTrip');
+        }
+        else {
+            Cookies.set('activeTrip', data);
+            setActiveTrip(data.activeTrip);
+        }
+    };
+
+    return {
+        setActiveTrip: saveActiveTrip,
+        activeTrip
+    }
+}
+[FILE_END]frontend/src/libraries/UseActiveTrip.js
+
+[FILE_START]frontend/src/libraries/UseToken.js
+import { useState } from 'react';
+import Cookies from 'js-cookie';
+
+export default function useToken(setActiveTrip) {
+    const [token, setToken] = useState(Cookies.get('tokken'));
+    const [name, setName] = useState(Cookies.get('name'));
+
+    const saveToken = data => {
+        if (data === null) {
+            Cookies.remove('tokken');
+            Cookies.remove('name');
+            setActiveTrip(null);
+        }
+        else {
+            Cookies.set('tokken', data.token);
+            Cookies.set('name', data.name);
+            setToken(data.token);
+            setName(data.name);
+        }
+    };
+
+    return {
+        setToken: saveToken,
+        token,
+        name
+    }
+}
+[FILE_END]frontend/src/libraries/UseToken.js
+
+[DIR_END]frontend/src/libraries
+
+[FILE_START]frontend/src/reportWebVitals.js
+const reportWebVitals = onPerfEntry => {
+  if (onPerfEntry && onPerfEntry instanceof Function) {
+    import('web-vitals').then(({ getCLS, getFID, getFCP, getLCP, getTTFB }) => {
+      getCLS(onPerfEntry);
+      getFID(onPerfEntry);
+      getFCP(onPerfEntry);
+      getLCP(onPerfEntry);
+      getTTFB(onPerfEntry);
+    });
+  }
+};
+
+export default reportWebVitals;
+
+[FILE_END]frontend/src/reportWebVitals.js
+
+[FILE_START]frontend/src/setupTests.js
+// jest-dom adds custom jest matchers for asserting on DOM nodes.
+// allows you to do things like:
+// expect(element).toHaveTextContent(/react/i)
+// learn more: https://github.com/testing-library/jest-dom
+import '@testing-library/jest-dom';
+
+import {configure} from "enzyme";
+import Adapter from 'enzyme-adapter-react-16';
+configure({ adapter: new Adapter() });
+
+[FILE_END]frontend/src/setupTests.js
+
+[DIR_END]frontend/src
+
+[DIR_END]frontend
+
