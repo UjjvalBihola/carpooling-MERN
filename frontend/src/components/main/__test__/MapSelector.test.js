@@ -1,26 +1,25 @@
 import Enzyme, { shallow } from "enzyme";
 import React from "react";
-import Adapter from 'enzyme-adapter-react-16';
-import Cookies from 'js-cookie';
+import Adapter from "enzyme-adapter-react-16";
+import Cookies from "js-cookie";
 import MapSelector from "../MapSelector";
 
-Enzyme.configure({ adapter: new Adapter() })
+Enzyme.configure({ adapter: new Adapter() });
 
 describe("map-selector", () => {
+  let wrapper;
 
-    let wrapper;
+  beforeEach(() => {
+    Cookies.get = jest.fn().mockImplementation(() => "tokken");
+    wrapper = shallow(<MapSelector />);
+  });
 
-    beforeEach(() => {
-        Cookies.get = jest.fn().mockImplementation(() => 'tokken');
-        wrapper = shallow(<MapSelector />);
-    });
+  it("Should render source button", () => {
+    const sourceButton = wrapper.find(`[data-test='close-button']`);
+    expect(sourceButton.length).toBe(1);
+  });
 
-    it("Should render source button", () => {
-        const sourceButton= wrapper.find(`[data-test='close-button']`);
-        expect(sourceButton.length).toBe(1);
-     });
-
-    afterEach(() => {
-        jest.clearAllMocks();
-    });
-})
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+});
