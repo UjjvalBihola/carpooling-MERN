@@ -3,7 +3,6 @@ import React from "react";
 import Adapter from "enzyme-adapter-react-16";
 import Cookies from "js-cookie";
 import DriveRide from "../DriveRide";
-
 Enzyme.configure({ adapter: new Adapter() });
 
 describe("drive", () => {
@@ -27,6 +26,11 @@ describe("drive", () => {
   it("Should render drive button", () => {
     const driveButton = wrapper.find(`[data-test='drive-submit-button']`);
     expect(driveButton.length).toBe(1);
+  });
+
+  it("Should not render drive button", () => {
+    const driveButton = wrapper.find(`[data-test='drive-submitted-button']`);
+    expect(driveButton.length).toBe(0);
   });
 
   afterEach(() => {
