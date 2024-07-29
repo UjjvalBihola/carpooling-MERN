@@ -43,3 +43,9 @@
 .trip-attributes {
   font-weight: bold;
 }
+
+.drive-ride-attributes {
+  font-weight: bold;
+  margin: 1rem;
+  font-size: 3.25rem;
+}
