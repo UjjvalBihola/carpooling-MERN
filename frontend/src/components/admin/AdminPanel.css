@@ -82,3 +82,9 @@ h1 {
   cursor: pointer;
   font-size: 1.5em;
 }
+
+.modal > link {
+  margin: 1rem;
+  columns: 1;
+  text-align: center;
+}
