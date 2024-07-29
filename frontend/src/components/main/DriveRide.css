@@ -12,3 +12,8 @@
 .modal-backdrop {
   z-index: 1000;
 }
+
+.modal-bg {
+  z-index: inherit;
+  column-gap: normal;
+}
