@@ -7,7 +7,6 @@ const mapContainerStyle = {
   width: "100%",
 };
 const options = {
-  // styles: mapStyles,
   disableDefaultUI: true,
   zoomControl: true,
 };
