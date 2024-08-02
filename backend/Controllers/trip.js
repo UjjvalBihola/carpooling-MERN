@@ -356,3 +356,58 @@ exports.isDriver = (req, res) => {
         
     })
 }
+
+
+
+
+// Rider requests a ride
+exports.requestRide = async (req, res) => {
+    const { tripId } = req.params;
+    const riderId = req.auth._id; // Assuming authentication middleware sets `req.auth`
+
+    try {
+        const trip = await Trip.findById(tripId);
+        if (!trip) return res.status(404).json({ message: 'Trip not found' });
+
+        // Add request
+        trip.rideRequests.push({ riderId });
+        await trip.save();
+        res.status(200).json({ message: 'Ride request sent' });
+    } catch (error) {
+        res.status(500).json({ message: 'Server error', error });
+    }
+};
+
+// Driver responds to ride request
+exports.respondToRequest = async (req, res) => {
+    const { tripId } = req.params;
+    const { riderId, response } = req.body; // 'accept' or 'decline'
+
+    try {
+        const trip = await Trip.findById(tripId);
+        const request = trip.rideRequests.find(r => r.riderId.toString() === riderId);
+        if (!request) return res.status(404).json({ message: 'Request not found' });
+
+        request.status = response;
+        await trip.save();
+        res.status(200).json({ message: `Request ${response}` });
+    } catch (error) {
+        res.status(500).json({ message: 'Server error', error });
+    }
+};
+
+// Submit feedback for a trip
+exports.submitFeedback = async (req, res) => {
+    const { tripId } = req.params;
+    const { rating, comment } = req.body;
+    const riderId = req.auth._id;
+
+    try {
+        const trip = await Trip.findById(tripId);
+        trip.feedbacks.push({ riderId, rating, comment });
+        await trip.save();
+        res.status(200).json({ message: 'Feedback submitted' });
+    } catch (error) {
+        res.status(500).json({ message: 'Server error', error });
+    }
+};
