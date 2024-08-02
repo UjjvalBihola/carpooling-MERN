@@ -4,6 +4,7 @@
   "private": true,
   "dependencies": {
     "@cypress/instrument-cra": "^1.4.0",
+    "@paypal/react-paypal-js": "^8.5.0",
     "@react-google-maps/api": "^2.7.0",
     "@testing-library/jest-dom": "^5.16.1",
     "@testing-library/user-event": "^13.5.0",

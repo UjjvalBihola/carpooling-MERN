@@ -3,8 +3,8 @@ import { Button, Col, Container, Row } from 'react-bootstrap';
 import { GoogleMap, DirectionsRenderer, DirectionsService } from '@react-google-maps/api';
 import Cookies from 'js-cookie';
 import Geocode from "react-geocode";
-
 import './ActiveTrip.css'
+import PayPalButtonComponent from '../PayPalButtonComponent';
 
 Geocode.setApiKey(process.env.REACT_APP_MAPS_API_KEY);
 // Map options
@@ -284,13 +284,11 @@ export default function ActiveTrip({ setActiveTrip }) {
                             {isDriver ? (
                                 <Button variant='primary' id='doneTripButton' onClick={handleDone}> Done </Button>
                             ) : (
-                                // Add Razorpay payment button
-                                <div>
-                                    <form>
-                                        <script src="https://checkout.razorpay.com/v1/payment-button.js" data-payment_button_id="pl_OdMokI0gZrpwWk" async></script>
-                                    </form>
-                                </div>
-                            )}
+                                amount ? (
+                                    <PayPalButtonComponent amount={amount.toString()} />
+                                ) : (
+                                    <div>Amount is not available</div>
+                                )                            )}
                             <Button variant='danger' id='cancelTripButton' onClick={handleCancel}> Cancel trip </Button>
                         </Row>
                     </Col>
