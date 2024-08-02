@@ -55,7 +55,7 @@ const PayPalButtonComponent = ({ amount }) => {
           </tr>
         </tbody>
       </table>
-      <PayPalScriptProvider options={{ "client-id": "test" }}>
+      <PayPalScriptProvider options={{ "client-id": process.env.REACT_APP_PAYPAL_CLIENT_ID }}>
         <PayPalButtons
           createOrder={createOrder}
           onApprove={onApprove}
