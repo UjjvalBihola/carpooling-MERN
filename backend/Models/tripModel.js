@@ -1,10 +1,11 @@
 const mongoose = require("mongoose");
 const schema = mongoose.Schema;
+
 const tripSchema = new schema({
     driver: {
         type: mongoose.ObjectId,
         require: true,
-    },    
+    },
     source: {
         type: Object,
         required: true,
@@ -39,6 +40,14 @@ const tripSchema = new schema({
     completed: {    // false: active
         type: Boolean,
         default: false
+    },
+    driver_note: {   // New field for driver note
+        type: String,
+        default: ''
+    },
+    rider_note: {   // New field for rider note
+        type: String,
+        default: ''
     },
 }, { timestamps: true });
 

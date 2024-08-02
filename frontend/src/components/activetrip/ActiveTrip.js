@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Button, Col, Container, Row } from 'react-bootstrap';
+import { Button, Col, Container, Row, Form } from 'react-bootstrap';
 import { GoogleMap, DirectionsRenderer, DirectionsService } from '@react-google-maps/api';
 import Cookies from 'js-cookie';
 import Geocode from "react-geocode";
@@ -24,6 +24,8 @@ const center = {
 const pricePerKm = 0.08; // Define your price per km here
 
 export default function ActiveTrip({ setActiveTrip }) {
+
+
     // For Map
     const [mapCoords, setMapCoords] = useState({})
     const [routeResp, setRouteResp] = useState();
@@ -31,6 +33,8 @@ export default function ActiveTrip({ setActiveTrip }) {
     const mapRef = useRef();
     const [amount, setAmount] = useState(0);
     const [isDriver, setIsDriver] = useState(false);
+    const [driverNote, setDriverNote] = useState("");
+    const [riderNote, setRiderNote] = useState("");
 
     const onMapLoad = (map) => {
         mapRef.current = map;
@@ -222,17 +226,64 @@ export default function ActiveTrip({ setActiveTrip }) {
             } else {
                 setriders("No Riders Yet");
             }
-
+    
+            setDriverNote(responseJson.driver_note || ""); // Set driver note
+            setRiderNote(responseJson.rider_note || ""); // Set rider note
+    
             // Set Map Coords
             mapCoords['src'] = responseJson.source
             mapCoords['dst'] = responseJson.destination
             setMapCoords(mapCoords)
             console.log(mapCoords)
-
+    
         }).catch((error) => {
             alert(error);
         });
     }, []);
+    const handleDriverNoteChange = (e) => {
+        setDriverNote(e.target.value);
+    }
+    
+    const handleRiderNoteChange = (e) => {
+        setRiderNote(e.target.value);
+    }
+    
+    const updateDriverNote = () => {
+        fetch(process.env.REACT_APP_END_POINT + '/trip/driverNote', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Coookie': Cookies.get('tokken')
+            },
+            body: JSON.stringify({ note: driverNote })
+        }).then((response) => {
+            if (!response.ok) throw new Error(response.statusText);
+            return response.json();
+        }).then((data) => {
+            alert("Driver note updated successfully");
+        }).catch((error) => {
+            alert(error);
+        });
+    }
+    
+    const updateRiderNote = () => {
+        fetch(process.env.REACT_APP_END_POINT + '/trip/riderNote', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Coookie': Cookies.get('tokken')
+            },
+            body: JSON.stringify({ note: riderNote })
+        }).then((response) => {
+            if (!response.ok) throw new Error(response.statusText);
+            return response.json();
+        }).then((data) => {
+            alert("Rider note updated successfully");
+        }).catch((error) => {
+            alert(error);
+        });
+    }
+    
 
     return (
         <>
@@ -277,6 +328,14 @@ export default function ActiveTrip({ setActiveTrip }) {
                             <h3 style={{ marginTop: '1rem' }}><span className='trip-attributes'>Driver</span>: {driver}</h3>
                             <h3><span className='trip-attributes'>Rider(s)</span>: {riders}</h3>
                             <h3><span className='trip-attributes'>Amount</span>: ${amount}</h3>
+                            <h3><span className='trip-attributes'>Driver Note</span>: </h3>
+                            <textarea value={driverNote} onChange={handleDriverNoteChange} />
+                            {isDriver ? ( <Button onClick={updateDriverNote}>Update Driver Note</Button> ) : "" }
+                            <h3><span className='trip-attributes'>Rider Note</span>: </h3>
+
+                            <textarea value={riderNote} onChange={handleRiderNoteChange} />
+                            {!isDriver ? ( <Button onClick={updateRiderNote}>Update Rider Note</Button> ) : "" }
+                            
                         </Row>
                     </Col>
                     <Col md="2">
@@ -288,7 +347,8 @@ export default function ActiveTrip({ setActiveTrip }) {
                                     <PayPalButtonComponent amount={amount.toString()} />
                                 ) : (
                                     <div>Amount is not available</div>
-                                )                            )}
+                                )
+                            )}
                             <Button variant='danger' id='cancelTripButton' onClick={handleCancel}> Cancel trip </Button>
                         </Row>
                     </Col>
@@ -296,4 +356,5 @@ export default function ActiveTrip({ setActiveTrip }) {
             </Container>
         </>
     )
+    
 }

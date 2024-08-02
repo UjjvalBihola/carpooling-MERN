@@ -15,28 +15,25 @@ const radiusOffset = 50;    //TODO: TUNE
 exports.activeTrip = (req, res) => {
     var riderArray = [];
     User.findById(req.auth._id, (err, user) => {
-       
-       if (user.active_trip == undefined || user.active_trip == null) {
+        if (user.active_trip == undefined || user.active_trip == null) {
             res.statusMessage = "No active trip";
             return res.status(400).end();
         }
         Trip.findById(user.active_trip, (err, trip) => {
-
             User.findById(trip.driver, (err, user_driver) => {
                 const riders = trip.riders;
-              
                 if(riders.length === 0){
                     res.status(200).json({
                         ...trip._doc,
                         riders: riderArray,
-                        driver: user_driver.name + ' ' + user_driver.lastname
+                        driver: user_driver.name + ' ' + user_driver.lastname,
+                        driver_note: trip.driver_note, // Include driver note
+                        rider_note: trip.rider_note // Include rider note
                     })
                 }
-              
                 var i = 0;
                 riders.forEach(rider => {
                     User.findById(rider, (err, user_rider) => {
-
                         if (err)
                             return res.status(500).end();
                         riderArray.push(String(user_rider.name + ' ' + user_rider.lastname));
@@ -45,7 +42,9 @@ exports.activeTrip = (req, res) => {
                             return res.status(200).json({
                                 ...trip._doc,
                                 riders: riderArray,
-                                driver: user_driver.name + ' ' + user_driver.lastname
+                                driver: user_driver.name + ' ' + user_driver.lastname,
+                                driver_note: trip.driver_note, // Include driver note
+                                rider_note: trip.rider_note // Include rider note
                             })
                         }
                     })
@@ -54,6 +53,44 @@ exports.activeTrip = (req, res) => {
         });
     });
 }
+
+exports.updateDriverNote = (req, res) => {
+    User.findById(req.auth._id, (err, user) => {
+        if (err || !user) return res.status(500).end();
+        if (!user.active_trip) {
+            res.statusMessage = "No active trip";
+            return res.status(400).end();
+        }
+        Trip.findById(user.active_trip, (err, trip) => {
+            if (err || !trip) return res.status(500).end();
+            trip.driver_note = req.body.note;
+            trip.save((err) => {
+                if (err) return res.status(500).end();
+                res.status(200).json(trip);
+            });
+        });
+    });
+}
+
+exports.updateRiderNote = (req, res) => {
+    User.findById(req.auth._id, (err, user) => {
+        if (err || !user) return res.status(500).end();
+        if (!user.active_trip) {
+            res.statusMessage = "No active trip";
+            return res.status(400).end();
+        }
+        Trip.findById(user.active_trip, (err, trip) => {
+            if (err || !trip) return res.status(500).end();
+            trip.rider_note = req.body.note;
+            trip.save((err) => {
+                if (err) return res.status(500).end();
+                res.status(200).json(trip);
+            });
+        });
+    });
+}
+
+
 
 exports.drive = (req, res) => {
     User.findById(req.auth._id, (err, user) => {
