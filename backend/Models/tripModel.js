@@ -1,78 +1,85 @@
 const mongoose = require("mongoose");
 const Schema = mongoose.Schema;
 
-const tripSchema = new Schema({
+const tripSchema = new Schema(
+  {
     driver: {
-        type: mongoose.ObjectId,
-        require: true,
+      type: mongoose.ObjectId,
+      require: true,
     },
     source: {
-        type: Object,
-        required: true,
+      type: Object,
+      required: true,
     },
     destination: {
-        type: Object,
-        required: true,
+      type: Object,
+      required: true,
     },
     route: {
-        type: Array,
+      type: Array,
     },
     waypoints: {
-        type: Array,
-        default: []
+      type: Array,
+      default: [],
     },
     dateTime: {
-        type: Date,
-        required: true,
+      type: Date,
+      required: true,
     },
     max_riders: {
-        type: Number,
-        required: true,
+      type: Number,
+      required: true,
     },
     available_riders: {
-        type: Boolean,
-        default: true
+      type: Boolean,
+      default: true,
     },
     riders: {
-        type: Array,
-        default: []
+      type: Array,
+      default: [],
     },
     completed: {
-        type: Boolean,
-        default: false // false: active
+      type: Boolean,
+      default: false,
     },
     price: {
-        type: Number,
-        required: true,
+      type: Number,
+      required: true,
     },
     driverRating: {
-        type: Number,
-        default: 5,
-        min: 1,
-        max: 5,
+      type: Number,
+      default: 5,
+      min: 1,
+      max: 5,
     },
     vehicleType: {
-        type: String,
-        required: true,
+      type: String,
+      required: true,
     },
-    rideRequests: [{
+    rideRequests: [
+      {
         riderId: {
-            type: mongoose.Schema.Types.ObjectId,
-            ref: 'User'
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "User",
         },
-        status: { // 'pending', 'accepted', 'declined'
-            type: String,
-            default: 'pending'
-        }
-    }],
-    feedbacks: [{
+        status: {
+          type: String,
+          default: "pending",
+        },
+      },
+    ],
+    feedbacks: [
+      {
         riderId: {
-            type: mongoose.Schema.Types.ObjectId,
-            ref: 'User'
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "User",
         },
         rating: Number,
         comment: String,
-    }],
-}, { timestamps: true });
+      },
+    ],
+  },
+  { timestamps: true }
+);
 
 module.exports = mongoose.model("trip", tripSchema);
