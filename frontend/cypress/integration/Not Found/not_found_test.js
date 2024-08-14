@@ -1,4 +1,3 @@
-it.only('not found test',function()
-{
-    cy.visit ("/notfound") 
-})
+it.only("not found test", function () {
+  cy.visit("/notfound");
+});
