@@ -127,6 +127,58 @@ export default function Navbar({ setToken, activeTrip, name }) {
         </div>
         {/* Primary Navbar end*/}
 
+        {/* Sidebar*/}
+        {Cookies.get("tokken") ? (
+          <nav className={sidebar ? "nav-menu active" : "nav-menu"}>
+            <ul className="sidebar-top-items" onClick={showSidebar}>
+              <li className="navbar-toggle" style={{ paddingLeft: "1rem" }}>
+                <Link to="#" className="menu-bars">
+                  <AiIcons.AiOutlineClose />
+                </Link>
+              </li>
+              <li>
+                <img src={defaultImg} alt="Name" data-test="name-image" />
+              </li>
+              <li style={{ textAlign: "center", marginBottom: "1.5rem" }}>
+                <div style={{ color: "white" }}>{name}</div>
+              </li>
+              {SidebarData.map((item, index) => {
+                if (
+                  (activeTrip &&
+                    item.title !== "Drive" &&
+                    item.title !== "Ride") ||
+                  (!activeTrip && item.title !== "Active Trip")
+                )
+                  return (
+                    <li key={index} className="nav-text">
+                      <Link to={item.path}>
+                        {item.icon}1
+                        <span style={{ marginLeft: "1rem" }}>{item.title}</span>
+                      </Link>
+                    </li>
+                  );
+              })}
+            </ul>
+            <ul className="sidebar-bottom-items" onClick={showSidebar}>
+              <li className="nav-text" data-test="logout-button">
+                <Link to="/" onClick={handleLogOut}>
+                  {" "}
+                  {/*call logout method*/}
+                  <FaIcons.FaSignOutAlt />
+                  <span style={{ marginLeft: "1rem" }}>Logout</span>
+                </Link>
+              </li>
+              <Button
+                id="deleteProfileButton"
+                variant="danger"
+                data-test="delete-button"
+                onClick={handleDeleteProfile}
+              >
+                Delete Profile
+              </Button>
+            </ul>
+          </nav>
+        ) : null}
         {/* Sidebar end*/}
       </IconContext.Provider>
     </>
