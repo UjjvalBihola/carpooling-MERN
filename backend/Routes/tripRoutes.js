@@ -1,25 +1,25 @@
 const express = require("express");
 const { isSignedin } = require("../Controllers/authenticate");
-const { 
-    drive, 
-    ride, 
-    cancelTrip, 
-    tripDone, 
-    tripHistory, 
-    activeTrip, 
-    isDriver,
-    requestRide,
-    respondToRequest,
-    submitFeedback
+const {
+  drive,
+  ride,
+  cancelTrip,
+  tripDone,
+  tripHistory,
+  activeTrip,
+  isDriver,
+  requestRide,
+  respondToRequest,
+  submitFeedback,
 } = require("../Controllers/trip.js");
 
 var router = express.Router();
 
 // Route for drivers to create a trip
-router.post("/trip/drive", isSignedin, drive);  // Swagger Api done
+router.post("/trip/drive", isSignedin, drive); // Swagger Api done
 
 // Route for riders to join a trip
-router.post("/trip/ride", isSignedin, ride);    //Swagger Api done
+router.post("/trip/ride", isSignedin, ride); //Swagger Api done
 
 // Route to cancel a trip
 router.delete("/trip", isSignedin, cancelTrip); // Swagger Api pending
