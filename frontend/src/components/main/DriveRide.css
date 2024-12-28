@@ -1,9 +1,8 @@
 .pac-container {
-  background-color: #FFF;
+  background-color: #fff;
   z-index: 3000;
   position: fixed;
   display: inline-block;
-  /* float: left; */
 }
 
 .modal {
