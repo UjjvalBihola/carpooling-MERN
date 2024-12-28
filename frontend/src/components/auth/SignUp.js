@@ -1,11 +1,10 @@
 import React, { useState } from "react";
 import Form from "react-bootstrap/Form";
 import Button from "react-bootstrap/Button";
-import './SignUp.css';
+import "./SignUp.css";
 import { Link } from "react-router-dom";
 
 export default function SignUp({ setToken }) {
-
   const [name, setName] = useState("");
   const [lastname, setLastname] = useState("");
   const [email, setEmail] = useState("");
@@ -13,12 +12,12 @@ export default function SignUp({ setToken }) {
   const [confirmpassword, setconfirmPassword] = useState("");
 
   function signupUser(userDetails) {
-    return fetch(process.env.REACT_APP_END_POINT + '/signup', {
-      method: 'POST',
+    return fetch(process.env.REACT_APP_END_POINT + "/signup", {
+      method: "POST",
       headers: {
-        'Content-Type': 'application/json'
+        "Content-Type": "application/json",
       },
-      body: JSON.stringify(userDetails)
+      body: JSON.stringify(userDetails),
     })
       .then((response) => {
         console.log(response);
@@ -34,26 +33,33 @@ export default function SignUp({ setToken }) {
         alert(error);
       });
   }
-  const handleSubmit = async e => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     const data = {
       name,
       lastname,
       email,
       password,
-      confirmpassword
-    }
+      confirmpassword,
+    };
     const sessionUserDetails = await signupUser(data);
     if (sessionUserDetails && sessionUserDetails.token) {
-      setToken({ token: sessionUserDetails.token, name: sessionUserDetails.user.name });
+      setToken({
+        token: sessionUserDetails.token,
+        name: sessionUserDetails.user.name,
+      });
       window.location.reload();
     }
-  }
+  };
 
   function validateForm() {
-    return email.length > 0 && password.length > 0 &&
-      name.length > 0 && lastname.length > 0 &&
+    return (
+      email.length > 0 &&
+      password.length > 0 &&
+      name.length > 0 &&
+      lastname.length > 0 &&
       password === confirmpassword
+    );
   }
 
   return (
@@ -114,16 +120,20 @@ export default function SignUp({ setToken }) {
               onChange={(e) => setconfirmPassword(e.target.value)}
             />
           </Form.Group>
-          <Button size="lg" type="submit" disabled={!validateForm()} className="signup-button" data-test="signup-button">
+          <Button
+            size="lg"
+            type="submit"
+            disabled={!validateForm()}
+            className="signup-button"
+            data-test="signup-button"
+          >
             Sign Up
           </Button>
         </Form>
-        <Link to='/login' className="login-link">Login</Link>
+        <Link to="/login" className="login-link">
+          Login
+        </Link>
       </div>
     </div>
   );
-  // Login.propTypes = {
-  //     setToken: PropTypes.func.isRequired
-  //   };
-
 }
